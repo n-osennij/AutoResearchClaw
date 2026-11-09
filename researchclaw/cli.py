@@ -647,9 +647,14 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     if start:
         from researchclaw.mcp.server import ResearchClawMCPServer
 
-        server = ResearchClawMCPServer()
-        print("Starting MCP server...")
-        asyncio.run(server.start())
+        # Never write to stdout here: it carries the JSON-RPC stream. Log to
+        # stderr so a client can show diagnostics without corrupting framing.
+        print("Starting MCP server on stdio...", file=sys.stderr)
+        server = ResearchClawMCPServer(config_path=cast(str, getattr(args, "config", "") or ""))
+        try:
+            asyncio.run(server.start())
+        except KeyboardInterrupt:
+            return 130
         return 0
     else:
         from researchclaw.mcp.tools import list_tool_names
@@ -1098,8 +1103,10 @@ def cmd_skills(args: argparse.Namespace) -> int:
         custom_dirs: list[str] = []
         if user_dir.is_dir():
             custom_dirs.append(str(user_dir))
-        project_skills = Path.cwd() / ".claude" / "skills"
-        if project_skills.is_dir():
+        from researchclaw.skills.registry import find_project_skills_dir
+
+        project_skills = find_project_skills_dir(Path.cwd())
+        if project_skills is not None:
             custom_dirs.append(str(project_skills))
 
         registry = SkillRegistry(custom_dirs=custom_dirs)
@@ -1121,7 +1128,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
                     sd = str(s.source_dir)
                     if ".researchclaw" in sd:
                         src = "user"
-                    elif ".claude" in sd:
+                    elif ".agents" in sd or ".claude" in sd:
                         src = "project"
                     elif ".metaclaw" in sd:
                         src = "metaclaw"
@@ -1131,7 +1138,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
         print(f"\nSkill directories:")
         print(f"  builtin:  researchclaw/skills/builtin/")
         print(f"  user:     {user_dir}/")
-        print(f"  project:  .claude/skills/")
+        print(f"  project:  .agents/skills/")
         return 0
 
     elif action == "install":
@@ -1343,7 +1350,10 @@ def build_parser() -> argparse.ArgumentParser:
     # C3: MCP integration
     mcp_p = sub.add_parser("mcp", help="MCP integration")
     _ = mcp_p.add_argument(
-        "--start", action="store_true", help="Start MCP server"
+        "--start", action="store_true", help="Start MCP server (stdio, newline JSON)"
+    )
+    _ = mcp_p.add_argument(
+        "-c", "--config", default="", help="Config file for the MCP server"
     )
 
     # C4: Overleaf sync

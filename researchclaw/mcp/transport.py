@@ -1,4 +1,15 @@
-"""MCP transport layer: stdio and SSE implementations."""
+"""MCP transport layer: stdio (newline-delimited JSON-RPC) and SSE stub.
+
+The MCP stdio framing is **one JSON-RPC message per line**, not the LSP
+``Content-Length`` header block this module used to emit. An LSP frame makes
+every spec-compliant client (pi, Claude, Codex) hang on the first read, so the
+old implementation was never usable.
+
+``StdioTransport`` takes optional reader/writer objects, which keeps it
+testable without touching real stdin/stdout. Reads run in a worker thread:
+``sys.stdin.buffer`` is a blocking pipe on Windows and cannot be driven by
+asyncio stream pipes there.
+"""
 
 from __future__ import annotations
 
@@ -20,54 +31,60 @@ class MCPTransport(Protocol):
 
 
 class StdioTransport:
-    """MCP transport over stdin/stdout (for CLI integration)."""
+    """MCP transport over stdin/stdout with newline-delimited JSON framing.
 
-    def __init__(self) -> None:
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
+    Reader must expose ``readline() -> bytes | str``; writer must expose
+    ``write(str)`` and ``flush()``. Both default to the process streams.
+    """
+
+    def __init__(self, reader: Any = None, writer: Any = None) -> None:
+        self._reader = reader
+        self._writer = writer
+        self._started = False
 
     async def start(self) -> None:
-        """Initialize stdin/stdout streams for async I/O."""
-        loop = asyncio.get_event_loop()
-        self._reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(self._reader)
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-        w_transport, w_protocol = await loop.connect_write_pipe(
-            asyncio.streams.FlowControlMixin, sys.stdout
-        )
-        self._writer = asyncio.StreamWriter(w_transport, w_protocol, self._reader, loop)
+        """Bind to stdin/stdout unless explicit streams were injected."""
+        if self._reader is None:
+            self._reader = sys.stdin.buffer
+        if self._writer is None:
+            self._writer = sys.stdout
+        self._started = True
 
     async def send(self, message: dict[str, Any]) -> None:
-        """Write a JSON-RPC message to stdout."""
-        if self._writer is None:
+        """Write one JSON-RPC message as a single line."""
+        if not self._started:
             raise RuntimeError("Transport not started")
-        data = json.dumps(message, ensure_ascii=False)
-        header = f"Content-Length: {len(data.encode())}\r\n\r\n"
-        self._writer.write(header.encode() + data.encode())
-        await self._writer.drain()
+        line = json.dumps(message, ensure_ascii=False, default=str)
+        self._writer.write(line + "\n")
+        self._writer.flush()
 
     async def receive(self) -> dict[str, Any]:
-        """Read a JSON-RPC message from stdin."""
-        if self._reader is None:
+        """Read the next JSON-RPC message.
+
+        Blank lines are skipped. Raises ``EOFError`` when the peer closes the
+        stream and ``ValueError`` when a line is not valid JSON.
+        """
+        if not self._started:
             raise RuntimeError("Transport not started")
-        # Read headers
-        content_length = 0
         while True:
-            line = await self._reader.readline()
-            decoded = line.decode().strip()
-            if not decoded:
-                break
-            if decoded.lower().startswith("content-length:"):
-                content_length = int(decoded.split(":")[1].strip())
-        if content_length == 0:
-            raise EOFError("No content-length header received")
-        body = await self._reader.readexactly(content_length)
-        return json.loads(body)
+            raw = await asyncio.to_thread(self._reader.readline)
+            if not raw:
+                raise EOFError("stdin closed")
+            text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+            text = text.strip()
+            if not text:
+                continue
+            try:
+                message = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Malformed JSON-RPC message: {exc}") from exc
+            if not isinstance(message, dict):
+                raise ValueError("JSON-RPC message must be an object")
+            return message
 
     async def close(self) -> None:
-        """Close the transport."""
-        if self._writer:
-            self._writer.close()
+        """Detach the streams (stdin/stdout are not ours to close)."""
+        self._started = False
 
 
 class SSETransport:

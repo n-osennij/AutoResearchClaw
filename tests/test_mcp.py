@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -10,7 +14,7 @@ from researchclaw.mcp.tools import TOOL_DEFINITIONS, get_tool_schema, list_tool_
 from researchclaw.mcp.server import ResearchClawMCPServer
 from researchclaw.mcp.client import MCPClient
 from researchclaw.mcp.registry import MCPServerRegistry
-from researchclaw.mcp.transport import SSETransport
+from researchclaw.mcp.transport import SSETransport, StdioTransport
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -62,6 +66,31 @@ class TestMCPTools:
 
 
 class TestMCPServer:
+    @staticmethod
+    def _server(tmp_path: Path) -> ResearchClawMCPServer:
+        from researchclaw.config import RCConfig
+
+        config = RCConfig.from_dict(
+            {
+                "project": {"name": "mcp-test", "mode": "docs-first"},
+                "research": {"topic": "mcp testing"},
+                "runtime": {"timezone": "UTC"},
+                "notifications": {"channel": "local"},
+                "knowledge_base": {"root": str(tmp_path / "kb")},
+                "llm": {
+                    "provider": "openai-compatible",
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key_env": "RC_TEST_KEY",
+                    "api_key": "inline",
+                },
+            },
+            project_root=tmp_path,
+            check_paths=False,
+        )
+        return ResearchClawMCPServer(
+            config=config, artifacts_root=tmp_path / "artifacts"
+        )
+
     def test_get_tools(self) -> None:
         server = ResearchClawMCPServer()
         tools = server.get_tools()
@@ -75,50 +104,328 @@ class TestMCPServer:
         assert result["success"] is False
         assert "Unknown tool" in result["error"]
 
-    def test_handle_run_pipeline(self) -> None:
-        server = ResearchClawMCPServer()
-        result = asyncio.run(server.handle_tool_call("run_pipeline", {"topic": "GNN"}))
-        assert result["success"] is True
-        assert "GNN" in result["message"]
+    def test_handle_run_pipeline_starts_background_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
 
-    def test_handle_get_status_missing_run(self) -> None:
-        server = ResearchClawMCPServer()
-        result = asyncio.run(server.handle_tool_call("get_pipeline_status", {"run_id": "nonexistent"}))
+        def fake_run(run_id: str, run_dir: Path, config: Any, auto: bool) -> None:
+            captured.update(
+                run_id=run_id,
+                run_dir=Path(run_dir),
+                topic=config.research.topic,
+                auto=auto,
+            )
+
+        monkeypatch.setattr(server, "_run_pipeline_sync", fake_run)
+        result = asyncio.run(
+            server.handle_tool_call(
+                "run_pipeline",
+                {"topic": "GNN drug discovery", "auto_approve": True},
+            )
+        )
+
+        assert result["success"] is True
+        assert "GNN drug discovery" in result["message"]
+        assert str(result["run_id"]).startswith("mcp-")
+        assert captured["topic"] == "GNN drug discovery"
+        assert captured["auto"] is True
+        assert Path(result["run_dir"]).is_dir()
+
+    def test_handle_run_pipeline_without_config(self, tmp_path: Path) -> None:
+        server = ResearchClawMCPServer(artifacts_root=tmp_path / "artifacts")
+        result = asyncio.run(server.handle_tool_call("run_pipeline", {"topic": "GNN"}))
+        assert result["success"] is False
+        assert "config" in result["error"].lower()
+
+    def test_handle_run_pipeline_requires_topic(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        result = asyncio.run(server.handle_tool_call("run_pipeline", {}))
+        assert result["success"] is False
+        assert "topic" in result["error"]
+
+    def test_handle_get_status_missing_run(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        result = asyncio.run(
+            server.handle_tool_call("get_pipeline_status", {"run_id": "nonexistent"})
+        )
         assert result["success"] is False
 
-    def test_handle_search_literature(self) -> None:
-        server = ResearchClawMCPServer()
-        result = asyncio.run(server.handle_tool_call("search_literature", {"query": "transformers"}))
-        assert result["success"] is True
+    def test_handle_get_status_reads_run_dir(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        run_dir = tmp_path / "artifacts" / "rc-20260101-000000"
+        stage_dir = run_dir / "stage-01"
+        stage_dir.mkdir(parents=True)
+        (run_dir / "checkpoint.json").write_text(
+            json.dumps({"last_completed_stage": 1}), encoding="utf-8"
+        )
+        (run_dir / "heartbeat.json").write_text(
+            json.dumps({"last_stage": "1"}), encoding="utf-8"
+        )
+        (stage_dir / "stage_health.json").write_text(
+            json.dumps({"status": "done"}), encoding="utf-8"
+        )
 
-    def test_handle_review_paper(self) -> None:
-        server = ResearchClawMCPServer()
-        result = asyncio.run(server.handle_tool_call("review_paper", {"paper_path": "/tmp/paper.md"}))
-        assert result["success"] is True
+        result = asyncio.run(
+            server.handle_tool_call(
+                "get_pipeline_status", {"run_id": "rc-20260101-000000"}
+            )
+        )
 
-    def test_start_stop(self) -> None:
-        server = ResearchClawMCPServer()
-        assert not server.is_running
+        assert result["success"] is True
+        assert result["checkpoint"]["last_completed_stage"] == 1
+        assert result["heartbeat"]["last_stage"] == "1"
+        assert result["stages"] == [{"stage": "stage-01", "status": "done"}]
+
+    def test_handle_get_results_missing(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        result = asyncio.run(
+            server.handle_tool_call("get_experiment_results", {"run_id": "missing"})
+        )
+        assert result["success"] is False
+
+    def test_handle_get_results_reads_summary(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        stage_dir = tmp_path / "artifacts" / "rc-results" / "stage-14"
+        stage_dir.mkdir(parents=True)
+        (stage_dir / "experiment_summary.json").write_text(
+            json.dumps({"metrics": {"accuracy": 0.91}}), encoding="utf-8"
+        )
+
+        result = asyncio.run(
+            server.handle_tool_call("get_experiment_results", {"run_id": "rc-results"})
+        )
+
+        assert result["success"] is True
+        assert result["source"].endswith("experiment_summary.json")
+        assert result["results"]["metrics"]["accuracy"] == 0.91
+
+    def test_handle_search_literature(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.literature.models import Paper
+
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+
+        def fake_search(query: str, **kwargs: Any) -> list[Paper]:
+            captured["query"] = query
+            captured.update(kwargs)
+            return [
+                Paper(
+                    paper_id="p1",
+                    title="Real Paper",
+                    year=2024,
+                    source="openalex",
+                    pdf_url="https://example.org/p1.pdf",
+                )
+            ]
+
+        monkeypatch.setattr("researchclaw.literature.search.search_papers", fake_search)
+        result = asyncio.run(
+            server.handle_tool_call(
+                "search_literature", {"query": "transformers", "max_results": 5}
+            )
+        )
+
+        assert result["success"] is True
+        assert captured["query"] == "transformers"
+        assert result["results"][0]["title"] == "Real Paper"
+        assert result["results"][0]["pdf_url"].endswith(".pdf")
+
+    def test_handle_search_literature_reports_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(tmp_path)
+
+        def boom(query: str, **kwargs: Any) -> list[Any]:
+            raise RuntimeError("rate limited")
+
+        monkeypatch.setattr("researchclaw.literature.search.search_papers", boom)
+        result = asyncio.run(server.handle_tool_call("search_literature", {"query": "x"}))
+        assert result["success"] is False
+        assert "rate limited" in result["error"]
+
+    def test_handle_review_paper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(tmp_path)
+        paper = tmp_path / "paper_draft.md"
+        paper.write_text("# Title\nbody", encoding="utf-8")
+
+        class _Response:
+            content = "REVIEW: needs more baselines"
+
+        class _LLM:
+            def chat(self, messages: Any, **kwargs: Any) -> _Response:
+                return _Response()
+
+        monkeypatch.setattr(
+            "researchclaw.llm.create_llm_client", lambda config: _LLM()
+        )
+        result = asyncio.run(
+            server.handle_tool_call("review_paper", {"paper_path": str(paper)})
+        )
+
+        assert result["success"] is True
+        assert "baselines" in result["review"]
+
+    def test_handle_review_paper_missing(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        result = asyncio.run(
+            server.handle_tool_call(
+                "review_paper", {"paper_path": str(tmp_path / "nope.md")}
+            )
+        )
+        assert result["success"] is False
+
+    def test_handle_get_paper_missing(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        result = asyncio.run(server.handle_tool_call("get_paper", {"run_id": "missing"}))
+        assert result["success"] is False
+
+    def test_handle_get_paper_found(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        stage_dir = tmp_path / "artifacts" / "rc-paper" / "stage-22"
+        stage_dir.mkdir(parents=True)
+        (stage_dir / "paper.tex").write_text(
+            "\\documentclass{article}", encoding="utf-8"
+        )
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "get_paper", {"run_id": "rc-paper", "format": "latex"}
+            )
+        )
+
+        assert result["success"] is True
+        assert "documentclass" in result["content"]
+
+
+# ══════════════════════════════════════════════════════════════════
+# MCP JSON-RPC protocol tests
+# ══════════════════════════════════════════════════════════════════
+
+
+def _serve(
+    server: ResearchClawMCPServer, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    stdin = io.BytesIO(b"".join(json.dumps(m).encode() + b"\n" for m in messages))
+    stdout = io.StringIO()
+
+    async def _run() -> None:
+        await server.serve(StdioTransport(reader=stdin, writer=stdout))
+
+    asyncio.run(_run())
+    return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+
+
+class TestMCPProtocol:
+    def test_initialize_and_tools_list(self) -> None:
+        responses = _serve(
+            ResearchClawMCPServer(),
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05"},
+                },
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            ],
+        )
+
+        assert len(responses) == 2  # notifications produce no response
+        assert responses[0]["result"]["serverInfo"]["name"] == "researchclaw"
+        assert responses[0]["result"]["protocolVersion"] == "2024-11-05"
+        assert any(
+            tool["name"] == "run_pipeline" for tool in responses[1]["result"]["tools"]
+        )
+
+    def test_tools_call_wraps_result_as_content(self, tmp_path: Path) -> None:
+        server = ResearchClawMCPServer(artifacts_root=tmp_path / "artifacts")
+        responses = _serve(
+            server,
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_paper",
+                        "arguments": {"run_id": "missing"},
+                    },
+                }
+            ],
+        )
+
+        result = responses[0]["result"]
+        assert result["isError"] is True
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["success"] is False
+
+    def test_unknown_method_returns_jsonrpc_error(self) -> None:
+        responses = _serve(
+            ResearchClawMCPServer(),
+            [{"jsonrpc": "2.0", "id": 3, "method": "does/not/exist"}],
+        )
+        assert responses[0]["error"]["code"] == -32601
+
+    def test_malformed_line_returns_parse_error(self) -> None:
+        stdin = io.BytesIO(b"not json\n")
+        stdout = io.StringIO()
 
         async def _run() -> None:
-            await server.start()
-            assert server.is_running
-            await server.stop()
+            await ResearchClawMCPServer().serve(
+                StdioTransport(reader=stdin, writer=stdout)
+            )
+
+        asyncio.run(_run())
+        response = json.loads(stdout.getvalue().strip())
+        assert response["error"]["code"] == -32700
+
+    def test_serve_exits_on_eof(self) -> None:
+        server = ResearchClawMCPServer()
+
+        async def _run() -> None:
+            transport = StdioTransport(reader=io.BytesIO(b""), writer=io.StringIO())
+            await server.serve(transport)
             assert not server.is_running
 
         asyncio.run(_run())
 
-    def test_handle_get_results_missing(self) -> None:
-        server = ResearchClawMCPServer()
-        result = asyncio.run(server.handle_tool_call("get_experiment_results", {"run_id": "missing"}))
-        assert result["success"] is False
 
-    def test_handle_get_paper_missing(self) -> None:
-        server = ResearchClawMCPServer()
-        result = asyncio.run(server.handle_tool_call("get_paper", {"run_id": "missing"}))
-        assert result["success"] is False
+# ══════════════════════════════════════════════════════════════════
+# Stdio transport framing
+# ══════════════════════════════════════════════════════════════════
 
 
+class TestStdioTransport:
+    def test_send_uses_newline_json_not_content_length(self) -> None:
+        writer = io.StringIO()
+        transport = StdioTransport(reader=io.BytesIO(b""), writer=writer)
+
+        async def _run() -> None:
+            await transport.start()
+            await transport.send({"jsonrpc": "2.0", "id": 1, "result": {}})
+
+        asyncio.run(_run())
+        output = writer.getvalue()
+        assert "Content-Length" not in output
+        assert output.endswith("\n")
+        assert json.loads(output)["id"] == 1
+
+    def test_receive_skips_blank_lines(self) -> None:
+        reader = io.BytesIO(b'\n\n{"jsonrpc": "2.0", "id": 2}\n')
+        transport = StdioTransport(reader=reader, writer=io.StringIO())
+
+        async def _run() -> dict[str, Any]:
+            await transport.start()
+            return await transport.receive()
+
+        assert asyncio.run(_run())["id"] == 2
 # ══════════════════════════════════════════════════════════════════
 # MCP Client tests
 # ══════════════════════════════════════════════════════════════════

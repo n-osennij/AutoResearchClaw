@@ -1,9 +1,10 @@
 """Pluggable code-generation backends for experiment Stages 10 & 13.
 
-Supports three providers:
+Supports four providers:
   - ``llm``         — existing LLM chat API (backward-compatible default)
   - ``claude_code`` — Claude Code CLI (``claude -p``)
   - ``codex``       — OpenAI Codex CLI (``codex exec``)
+  - ``pi``          — pi CLI (``pi -p``), tools write the files in cwd
 
 Usage::
 
@@ -726,6 +727,98 @@ class CodexAgent(_CliAgentBase):
 
 
 # ---------------------------------------------------------------------------
+# PiAgent
+# ---------------------------------------------------------------------------
+
+class PiAgent(_CliAgentBase):
+    """Code agent backed by the pi CLI (``pi -p``).
+
+    pi writes the project files with its own tools, so the pipeline only has to
+    collect ``*.py`` from the workdir afterwards. ``--no-session`` keeps one-off
+    codegen out of the interactive session history and ``--mode text`` reduces
+    stdout to the final assistant message (``--mode json`` streams events).
+
+    Note: pi has no ``--max-budget-usd`` flag, so ``max_budget_usd`` from
+    ``experiment.cli_agent`` is not forwarded.
+    """
+
+    _provider_name = "pi"
+
+    def _build_cmd(self, prompt: str, workdir: Path) -> list[str]:
+        cmd = [
+            self._binary,
+            "-p", prompt,
+            "--no-session",
+            "--mode", "text",
+            "--tools", "read,bash,edit,write",
+        ]
+        if self._model:
+            cmd += ["--model", self._model]
+        cmd.extend(self._extra_args)
+        return cmd
+
+    def generate(
+        self,
+        *,
+        exp_plan: str,
+        topic: str,
+        metric_key: str,
+        pkg_hint: str,
+        compute_budget: str,
+        extra_guidance: str,
+        workdir: Path,
+        timeout_sec: int = 600,
+    ) -> CodeAgentResult:
+        prompt = self._generate_prompt(
+            topic, exp_plan, metric_key, pkg_hint, compute_budget, extra_guidance,
+        )
+        cmd = self._build_cmd(prompt, workdir)
+        rc, stdout, stderr, elapsed, to = self._run_subprocess(
+            cmd, workdir, timeout_sec or self._default_timeout,
+        )
+        return self._build_result(workdir, rc, stdout, stderr, elapsed, to)
+
+    def refine(
+        self,
+        *,
+        current_files: dict[str, str],
+        run_summaries: list[str],
+        metric_key: str,
+        metric_direction: str,
+        topic: str,
+        extra_hints: str,
+        workdir: Path,
+        timeout_sec: int = 600,
+    ) -> CodeAgentResult:
+        _seed_workdir(workdir, current_files)
+        prompt = self._refine_prompt(
+            current_files, run_summaries, metric_key, metric_direction,
+            topic, extra_hints,
+        )
+        cmd = self._build_cmd(prompt, workdir)
+        rc, stdout, stderr, elapsed, to = self._run_subprocess(
+            cmd, workdir, timeout_sec or self._default_timeout,
+        )
+        return self._build_result(workdir, rc, stdout, stderr, elapsed, to)
+
+    def repair(
+        self,
+        *,
+        files: dict[str, str],
+        issues: str,
+        workdir: Path,
+        timeout_sec: int = 300,
+    ) -> CodeAgentResult:
+        _seed_workdir(workdir, files)
+        prompt = self._repair_prompt(files, issues)
+        cmd = self._build_cmd(prompt, workdir)
+        rc, stdout, stderr, elapsed, to = self._run_subprocess(
+            cmd, workdir, timeout_sec or self._default_timeout,
+        )
+        return self._build_result(workdir, rc, stdout, stderr, elapsed, to)
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -768,6 +861,21 @@ def create_code_agent(
                 "Install it or set experiment.code_agent.binary_path."
             )
         return CodexAgent(  # type: ignore[return-value]
+            binary_path=binary,
+            model=agent_cfg.model or "",
+            max_budget_usd=agent_cfg.max_budget_usd,
+            timeout_sec=agent_cfg.timeout_sec,
+            extra_args=list(agent_cfg.extra_args),
+        )
+
+    if provider == "pi":
+        binary = agent_cfg.binary_path or shutil.which("pi")
+        if not binary:
+            raise RuntimeError(
+                "pi binary not found. "
+                "Install it or set experiment.code_agent.binary_path."
+            )
+        return PiAgent(  # type: ignore[return-value]
             binary_path=binary,
             model=agent_cfg.model or "",
             max_budget_usd=agent_cfg.max_budget_usd,

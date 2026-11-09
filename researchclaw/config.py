@@ -106,7 +106,7 @@ EXPERIMENT_MODES = {
     "biology_agent",   # Biology: Biology-Agent (FBA / pFBA / FVA via COBRApy + BIGG) via Claude Code
     "stat_agent",      # Statistics: stat_research_agent (sim studies, CI/coverage) via Claude Code
 }
-CLI_AGENT_PROVIDERS = {"llm", "claude_code", "codex"}
+CLI_AGENT_PROVIDERS = {"llm", "claude_code", "codex", "pi"}
 
 
 def _get_by_path(data: dict[str, Any], dotted_key: str) -> Any:
@@ -581,9 +581,11 @@ class CliAgentConfig:
     provider: "llm"          — use existing LLM chat API (default, backward-compatible)
               "claude_code"  — Claude Code CLI (``claude -p``)
               "codex"        — OpenAI Codex CLI (``codex exec``)
+              "pi"           — pi CLI (``pi -p``, tools write the files in cwd)
 
     Auth for claude_code: ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL env vars.
     Auth for codex:       OPENAI_API_KEY env var.
+    Auth for pi:          whatever pi itself is logged in with (``pi auth``).
     """
 
     provider: str = "llm"

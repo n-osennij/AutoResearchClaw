@@ -42,6 +42,7 @@ from typing import Any
 
 from researchclaw.config import StatAgentConfig
 from researchclaw.experiment.sandbox import SandboxResult
+from researchclaw.experiment.cli_flags import agent_cli_flags
 
 logger = logging.getLogger(__name__)
 
@@ -367,14 +368,12 @@ class StatAgentSandbox:
             binary = shutil.which("claude") or "claude"
 
         cmd = [binary, "-p", _CLAUDE_INSTRUCTION]
-
-        if self.config.max_turns > 0:
-            cmd += ["--max-turns", str(self.config.max_turns)]
-
-        for arg in self.config.extra_args:
-            if arg:
-                cmd.append(arg)
-
+        # --max-turns is Claude-specific; pi/codex/opencode reject the flag.
+        cmd += agent_cli_flags(
+            binary,
+            max_turns=self.config.max_turns,
+            extra_args=self.config.extra_args,
+        )
         return cmd
 
     def _build_env(self) -> dict[str, str]:
