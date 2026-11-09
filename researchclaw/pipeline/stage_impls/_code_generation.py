@@ -32,7 +32,7 @@ from researchclaw.pipeline._helpers import (
 )
 from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
-from researchclaw.prompts.shared import format_time_budget
+from researchclaw.prompts.shared import format_metric_direction, format_time_budget
 
 logger = logging.getLogger(__name__)
 
@@ -720,10 +720,7 @@ def _execute_code_generation(
         # ── Legacy single-shot generation ─────────────────────────────────
         topic = config.research.topic
         _md = config.experiment.metric_direction
-        _md_hint = (
-            f"`{_md}` — use direction={'lower' if _md == 'minimize' else 'higher'} "
-            f"in METRIC_DEF. You MUST NOT use the opposite direction."
-        )
+        _md_hint = format_metric_direction(_md)
         _overlay = _get_evolution_overlay(run_dir, "code_generation")
         sp = _pm.for_stage(
             "code_generation",

@@ -27,7 +27,7 @@ import json
 import logging
 import re
 import time
-from researchclaw.prompts.shared import format_time_budget
+from researchclaw.prompts.shared import format_metric_direction, format_time_budget
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -1021,6 +1021,9 @@ class CodeAgent:
             metric=metric,
             pkg_hint=hint,
             exp_plan=exp_plan,
+            metric_direction_hint=format_metric_direction(
+                getattr(self._exp_config, "metric_direction", "")
+            ),
             time_budget=format_time_budget(self._exp_config),
         )
         resp = self._chat(sp.system, sp.user, max_tokens=max_tokens)

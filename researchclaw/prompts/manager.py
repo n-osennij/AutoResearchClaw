@@ -53,13 +53,32 @@ def _render(template: str, variables: dict[str, str]) -> str:
         key = match.group(1)
         if key in variables:
             return str(variables[key])
+        if _is_latex_brace(template, match):
+            return match.group(0)
         logger.warning(
             "Prompt placeholder {%s} was not supplied; it is rendered literally",
             key,
         )
         return match.group(0)
 
-    return re.sub(r"\{(\w+)\}", _replacer, template)
+    return re.sub(r"(?<!\\)\{(\w+)\}", _replacer, template)
+
+
+# LaTeX column specs (``\begin{tabular}{lcc}``) and control-sequence names
+# (``\begin{tabular}``) match the placeholder pattern. Warning about them
+# drowns the real signal: a full test run emitted 267 such false positives.
+_LATEX_COLSPEC_RE = re.compile(r"^[lcrpbX|]{2,8}$")
+_LATEX_BRACE_NAMES = frozenset({"tabular", "tabularx", "array", "picture"})
+
+
+def _is_latex_brace(template: str, match: re.Match[str]) -> bool:
+    """True when the brace pair at *match* is LaTeX, not a placeholder."""
+    key = match.group(1)
+    if key in _LATEX_BRACE_NAMES or _LATEX_COLSPEC_RE.match(key):
+        return True
+    # ``\begin{...}`` / ``\end{...}``: the name follows a control sequence.
+    prefix = template[max(0, match.start() - 6) : match.start()]
+    return prefix.endswith(("\\begin", "\\end"))
 
 
 # ---------------------------------------------------------------------------

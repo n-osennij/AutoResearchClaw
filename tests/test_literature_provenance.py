@@ -69,18 +69,39 @@ def _rows() -> list[dict[str, Any]]:
 
 class TestTitleKeys:
     def test_model_restated_titles_still_match(self) -> None:
-        from researchclaw.pipeline.stage_impls._literature import _row_keys
+        from researchclaw.pipeline.stage_impls._literature import (
+            _reapply_provenance,
+            _row_keys,
+        )
 
         base = {"paper_id": "", "title": "Attention improves sequence transduction."}
+        # Case and punctuation never change the key.
         variants = [
             "attention improves sequence transduction",
             "Attention improves sequence transduction",
             "ATTENTION IMPROVES SEQUENCE TRANSDUCTION.",
-            "Attention improves sequence transduction, et al.",
-            "Attention improves sequence transduction et al",
         ]
         keys = {tuple(_row_keys({**base, "title": v})) for v in variants}
         assert len(keys) == 1, keys
+
+        # A model that appends "et al." keeps its provenance: the lookup falls
+        # back to the stripped form instead of the index carrying it (two
+        # distinct titles, "Reply to Smith" / "Reply to Smith et al.", would
+        # otherwise merge).
+        sources = [
+            {
+                "title": "Attention improves sequence transduction",
+                "pmid": "30000001",
+                "is_preprint": True,
+            }
+        ]
+        for variant in (
+            "Attention improves sequence transduction, et al.",
+            "Attention improves sequence transduction et al",
+        ):
+            merged, dropped, unmatched = _reapply_provenance([{"title": variant}], sources)
+            assert (dropped, unmatched) == (0, 0), variant
+            assert merged[0]["pmid"] == "30000001", variant
 
     def test_doi_key_is_case_insensitive(self) -> None:
         from researchclaw.pipeline.stage_impls._literature import _row_keys
@@ -304,3 +325,99 @@ class TestCardProvenance:
         body = (stage_dir / "cards" / "card-1.md").read_text(encoding="utf-8")
         assert "retracted" not in body
         assert "pmid: 42" in body
+
+
+class TestIdentityKeys:
+    """Keys must identify a paper, never a *shape* of a paper row."""
+
+    def test_json_null_ids_do_not_collide(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import (
+            _reapply_provenance,
+            _row_keys,
+        )
+
+        # ``Paper.to_dict()`` writes explicit nulls, and stage 4 copies them.
+        row = {"paper_id": None, "doi": None, "cite_key": None, "title": "Healthy study"}
+        assert _row_keys(row) == ["title:healthy study"]
+
+        sources = [
+            {
+                "paper_id": None,
+                "doi": None,
+                "title": "Retracted one",
+                "retracted": True,
+            },
+            {"paper_id": None, "doi": None, "title": "Healthy study"},
+        ]
+        merged, dropped, unmatched = _reapply_provenance(
+            [{"paper_id": None, "doi": None, "title": "Healthy study"}], sources
+        )
+        # Before the fix every null-id row shared the key ``paper_id:none``, so
+        # the retracted row answered for the healthy one and it was dropped.
+        assert dropped == 0 and unmatched == 0
+        assert [row["title"] for row in merged] == ["Healthy study"]
+
+    def test_et_al_is_not_stripped_while_indexing(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _row_keys
+
+        strict = _row_keys({"title": "Reply to Smith et al."})
+        other = _row_keys({"title": "Reply to Smith"})
+        assert strict != other
+        # ... but a row that matches nothing gets a second chance without it.
+        assert _row_keys({"title": "Reply to Smith et al."}, strip_etal=True) == other
+
+    def test_punctuation_only_title_still_has_a_key(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _row_keys
+
+        assert _row_keys({"title": "..."}) == ["title:..."]
+
+    def test_model_retraction_is_written_back_to_the_source_row(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _reapply_provenance
+
+        source = {"title": "Found retracted by the model", "retracted": False}
+        merged, dropped, _ = _reapply_provenance(
+            [{"title": "Found retracted by the model", "retracted": "true"}], [source]
+        )
+        assert merged == [] and dropped == 1
+        # The post-drop top-up reads these rows; without the flag it re-added
+        # the paper the model had just flagged.
+        assert source["retracted"] is True
+
+
+class TestStaleCards:
+    def test_rerun_does_not_keep_cards_from_the_previous_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """A resumed stage 6 must not feed synthesis last attempt's cards.
+
+        The fallback writer names its files ``card-1..N``; higher-numbered or
+        slug-named cards from an earlier attempt stayed on disk, so synthesis
+        globbed six cards for a three-paper shortlist.
+        """
+        from researchclaw.pipeline.stage_impls import _literature as lit
+
+        shortlist = [{"paper_id": "pmid:1", "title": "Paper one", "pmid": "1"}]
+        run_dir = tmp_path / "run"
+        (run_dir / "stage-05").mkdir(parents=True)
+        (run_dir / "stage-05" / "shortlist.jsonl").write_text(
+            json.dumps(shortlist[0]), encoding="utf-8"
+        )
+        stage_dir = run_dir / "stage-06"
+        cards_dir = stage_dir / "cards"
+        cards_dir.mkdir(parents=True)
+        # Attempt 1 leftovers: a stale extra card and a slug-named one.
+        (cards_dir / "card-7.md").write_text("stale", encoding="utf-8")
+        (cards_dir / "old-slug.md").write_text("stale", encoding="utf-8")
+
+        original = lit._chat_with_prompt
+        lit._chat_with_prompt = lambda *a, **k: SimpleNamespace(  # type: ignore[assignment]
+            content=json.dumps({"cards": [{"card_id": "card-1", "title": "Paper one"}]})
+        )
+        try:
+            result = lit._execute_knowledge_extract(
+                stage_dir, run_dir, _config(tmp_path), AdapterBundle(), llm=object()
+            )
+        finally:
+            lit._chat_with_prompt = original  # type: ignore[assignment]
+        assert result.status == StageStatus.DONE
+        assert sorted(p.name for p in cards_dir.glob("*.md")) == ["card-1.md"]

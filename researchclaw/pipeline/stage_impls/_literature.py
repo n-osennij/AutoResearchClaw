@@ -1081,17 +1081,27 @@ _EVIDENCE_FIELDS = (
 )
 
 
-def _title_key(title: object) -> str:
+def _title_key(title: object, *, strip_etal: bool = False) -> str:
     """Match key for a title the model echoed back from the shortlist.
 
     Models restate titles with a trailing period, an appended "et al." or
     re-escaped LaTeX. A punctuation-exact key silently loses every provenance
     field for that row, so the key is normalised the same way the dedup key is.
+
+    *strip_etal* is off by default because ``"Reply to Smith et al."`` is a
+    different paper from ``"Reply to Smith"``: stripping it while building the
+    index merged the two and pasted one paper's ``pmid`` onto the other. It is
+    used only as a second-chance lookup for a row that matched nothing, where
+    there is no collision to fear.
     """
     text = unicodedata.normalize("NFKC", str(title or "")).casefold()
     text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"\bet al\.?$", "", text).strip()
-    return text.rstrip(" .,;:!?…—-/")
+    if strip_etal:
+        text = re.sub(r"[,\s]+et al\.?$", "", text).strip()
+    stripped = text.rstrip(" .,;:!?…—-/")
+    # A punctuation-only title ("...") still needs a key, otherwise the row
+    # loses every match and is counted as unmatched without a trace.
+    return stripped or text
 
 
 def _truthy(value: object) -> bool:
@@ -1105,14 +1115,22 @@ def _truthy(value: object) -> bool:
     return bool(value)
 
 
-def _row_keys(row: dict[str, Any]) -> list[str]:
+def _row_keys(row: dict[str, Any], *, strip_etal: bool = False) -> list[str]:
     """Identifiers a shortlist row can be matched back on."""
     keys = []
     for field in ("paper_id", "doi", "cite_key", "arxiv_id"):
-        value = str(row.get(field, "")).strip().lower()
-        if value:
+        # ``.get(field, "")`` only defaults a *missing* key: a JSON null (which
+        # ``Paper.to_dict()`` emits) used to become the key ``paper_id:none``.
+        # Every null-id row then collided on it, so the first such candidate
+        # answered for all of them — and if that one was retracted, healthy
+        # papers were dropped with it.
+        raw = row.get(field)
+        if raw is None:
+            continue
+        value = str(raw).strip().lower()
+        if value and value not in {"none", "null", "nan"}:
             keys.append(f"{field}:{value}")
-    title = _title_key(row.get("title"))
+    title = _title_key(row.get("title"), strip_etal=strip_etal)
     if title:
         keys.append(f"title:{title}")
     return keys
@@ -1172,10 +1190,14 @@ def _reapply_provenance(
             match = index.get(key)
             if match is not None:
                 break
+        if match is None:
+            # Second chance: models append "et al." to an author list, and that
+            # form is not in the index (see _title_key) — retry without it.
+            for key in _row_keys(row, strip_etal=True):
+                match = index.get(key)
+                if match is not None:
+                    break
         if match is not None:
-            if _truthy(match.get("retracted")):
-                dropped += 1
-                continue
             for field in _EVIDENCE_FIELDS:
                 value = match.get(field)
                 if field == "retracted":
@@ -1191,7 +1213,10 @@ def _reapply_provenance(
             unmatched += 1
         if _truthy(row.get("retracted")):
             # Either side finding the retraction is enough: a retracted paper in
-            # the shortlist is quoted as evidence downstream.
+            # the shortlist is quoted as evidence downstream. Flag the source
+            # row too, or the top-up below re-adds the same paper as clean.
+            if match is not None:
+                match["retracted"] = True
             dropped += 1
             continue
         merged.append(row)
@@ -1578,6 +1603,11 @@ def _execute_knowledge_extract(
 
     cards_dir = stage_dir / "cards"
     cards_dir.mkdir(parents=True, exist_ok=True)
+    # Stage 6 is idempotent per run dir: a re-run (or a resumed run that fell
+    # back to template cards) must not leave the previous attempt's cards on
+    # disk, or synthesis reads "6 cards" for a 3-paper shortlist.
+    for stale_card in cards_dir.glob("*.md"):
+        stale_card.unlink()
     cards: list[dict[str, Any]] = []
     if llm is not None:
         _pm = prompts or PromptManager()

@@ -317,7 +317,6 @@ def test_prompt_blocks_has_shrunk_surface() -> None:
     ],
 )
 def test_hep_bank_vocabulary_present(token: str) -> None:
-    pm = PromptManager(domain="hep_ph")
     joined = "\n".join(t for _, t in _all_hep_texts())
     assert token.lower() in joined.lower(), (
         f"Expected HEP vocabulary token {token!r} missing from bank output"
@@ -361,3 +360,48 @@ def test_debate_roles_pass_the_context_they_debate(domain: str) -> None:
         assert "{topic}" in role["user"] and "{synthesis}" in role["user"], domain
     for role in pm.debate_roles_analysis().values():
         assert "{data_context}" in role["user"], domain
+
+
+@pytest.mark.parametrize("domain", ["ml", "hep_ph", "biology_metabolic"])
+def test_code_generation_renders_every_placeholder(domain: str, caplog) -> None:
+    """Every ``code_generation`` token must be supplied by its call sites.
+
+    The three CodeAgents (``pipeline/code_agent.py``,
+    ``experiment/code_agent.py``, ``pipeline/stage_impls/_code_generation.py``)
+    render the same template; two of them forgot ``{metric_direction_hint}``,
+    so the generated code was told its metric direction was the literal
+    ``{metric_direction_hint}``. This mirrors the call sites' kwarg set.
+    """
+    import logging
+
+    from researchclaw.prompts.shared import format_metric_direction
+
+    pm = PromptManager(domain=domain)
+    with caplog.at_level(logging.WARNING, logger="researchclaw.prompts.manager"):
+        rendered = pm.for_stage(
+            "code_generation",
+            topic="KV cache compression",
+            metric="accuracy",
+            pkg_hint="numpy only",
+            exp_plan="compare conditions",
+            metric_direction_hint=format_metric_direction("minimize"),
+            time_budget="600s (per condition: 60s)",
+        )
+    unresolved = [
+        record.getMessage()
+        for record in caplog.records
+        if "was not supplied" in record.getMessage()
+    ]
+    assert unresolved == [], (domain, unresolved)
+    assert "{metric_direction_hint}" not in rendered.user
+    assert "use direction='lower'" in rendered.user
+
+
+def test_metric_direction_helper_covers_every_value() -> None:
+    from researchclaw.prompts.shared import format_metric_direction
+
+    assert "direction='lower'" in format_metric_direction("minimize")
+    assert "direction='higher'" in format_metric_direction("maximize")
+    unset = format_metric_direction("")
+    assert "not configured" in unset and "{" not in unset
+    assert format_metric_direction(None) == unset

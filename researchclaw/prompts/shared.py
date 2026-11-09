@@ -1194,3 +1194,29 @@ def format_time_budget(experiment: Any) -> str:
     if not total:
         return ""
     return f"{total}s (per condition: {per_condition}s)"
+
+
+def format_metric_direction(direction: Any) -> str:
+    """Direction hint for the ``{metric_direction_hint}`` placeholder.
+
+    Every code-generation bank (ml / biology / hep) asks the model to declare a
+    ``METRIC_DEF`` block, and this token is the only thing that tells it which
+    way the metric improves. A model that has to guess optimises the wrong
+    reward and the whole run is wasted, so the unset case is spelled out
+    instead of rendered blank or left as a literal ``{metric_direction_hint}``.
+    """
+    value = str(direction or "").strip().lower()
+    if value == "minimize":
+        return (
+            "`minimize` — use direction='lower' in METRIC_DEF. "
+            "You MUST NOT use the opposite direction."
+        )
+    if value == "maximize":
+        return (
+            "`maximize` — use direction='higher' in METRIC_DEF. "
+            "You MUST NOT use the opposite direction."
+        )
+    return (
+        "not configured — infer the improving direction from the metric name "
+        "and state it explicitly in METRIC_DEF."
+    )

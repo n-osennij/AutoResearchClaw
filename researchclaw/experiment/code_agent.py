@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from researchclaw.config import RCConfig
-from researchclaw.prompts.shared import format_time_budget
+from researchclaw.prompts.shared import format_metric_direction, format_time_budget
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +216,9 @@ class LlmCodeAgent:
             metric=metric_key,
             pkg_hint=pkg_hint + "\n" + compute_budget + "\n" + extra_guidance,
             exp_plan=exp_plan,
+            metric_direction_hint=format_metric_direction(
+                getattr(self._config.experiment, "metric_direction", "")
+            ),
             time_budget=format_time_budget(self._config.experiment),
         )
         # Higher max_tokens for reasoning models
