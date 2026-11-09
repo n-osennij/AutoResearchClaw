@@ -119,7 +119,9 @@ the screening funnel, a shortlist table (title/year/venue/citations/relevance),
 one section per evidence card, the synthesis with research gaps, and a
 numbered reference list. Gates are auto-approved; everything else (sources,
 keys, year floor, hybrid pass, screening budget) comes from the config. See
-[`docs/LITERATURE_SEARCH.md`](docs/LITERATURE_SEARCH.md) for the knobs.
+[`docs/LITERATURE_SEARCH.md`](docs/LITERATURE_SEARCH.md) for the knobs, and
+[`docs/USAGE_SCENARIOS.md`](docs/USAGE_SCENARIOS.md) for who drives the run
+(plain CLI, an agent in the project folder, or the repo itself).
 
 ---
 

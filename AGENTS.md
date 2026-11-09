@@ -15,6 +15,7 @@ Deeper references, read on demand:
 | `README.md` → ⚙️ Configuration Reference | every config key, provider presets, ACP table |
 | `docs/integration-guide.md` | human walkthrough: setup, stages, artifacts, troubleshooting |
 | `docs/LITERATURE_SEARCH.md` | Stages 3–6 in detail: source keys, year/hybrid policy, screening budget math, cache |
+| `docs/USAGE_SCENARIOS.md` | who drives the run: batch CLI, agent-in-project-folder iteration (with MCP limits), or working inside this repo |
 
 ## First commands
 
