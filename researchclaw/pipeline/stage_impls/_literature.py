@@ -154,11 +154,11 @@ def _paper_from_candidate(candidate: dict[str, Any]) -> Any:
         url=str(candidate.get("url") or ""),
         source=str(candidate.get("source") or ""),
         pmid=str(candidate.get("pmid") or ""),
-        is_preprint=bool(candidate.get("is_preprint")),
+        is_preprint=_truthy(candidate.get("is_preprint")),
         pub_types=_str_tuple(candidate.get("pub_types")),
         mesh_terms=_str_tuple(candidate.get("mesh_terms")),
-        retracted=bool(candidate.get("retracted")),
-        concern=bool(candidate.get("concern")),
+        retracted=_truthy(candidate.get("retracted")),
+        concern=_truthy(candidate.get("concern")),
     )
 
 
@@ -1096,6 +1096,17 @@ def _title_key(title: object) -> str:
     return text.rstrip(" .,;:!?…—-/")
 
 
+def _truthy(value: object) -> bool:
+    """Read a flag the way a JSON-emitting model means it.
+
+    ``bool("false")`` is True, so a model that stringifies a flag (or a
+    hand-edited candidates.jsonl) used to drop a healthy paper as retracted.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "t"}
+    return bool(value)
+
+
 def _row_keys(row: dict[str, Any]) -> list[str]:
     """Identifiers a shortlist row can be matched back on."""
     keys = []
@@ -1128,7 +1139,7 @@ def _provenance_block(row: dict[str, Any]) -> dict[str, Any]:
                 block[field] = str(value)
             continue
         if field == "retracted":
-            if value:
+            if _truthy(value):
                 block[field] = True
             continue
         if value in (None, "", [], (), False):
@@ -1164,7 +1175,7 @@ def _reapply_provenance(
             if match is not None:
                 break
         if match is not None:
-            if match.get("retracted"):
+            if _truthy(match.get("retracted")):
                 dropped += 1
                 continue
             for field in _EVIDENCE_FIELDS:
@@ -1172,7 +1183,7 @@ def _reapply_provenance(
                 if field == "retracted":
                     # The model may have found a retraction the backend missed;
                     # OR keeps it instead of erasing it with the source's False.
-                    row[field] = bool(value or row.get(field))
+                    row[field] = _truthy(value) or _truthy(row.get(field))
                 elif field in {"pub_types", "mesh_terms"}:
                     if value not in (None, "", [], ()):
                         row[field] = list(value) if isinstance(value, (list, tuple)) else value
@@ -1180,7 +1191,7 @@ def _reapply_provenance(
                     row[field] = value
         else:
             unmatched += 1
-        if row.get("retracted"):
+        if _truthy(row.get("retracted")):
             # Either side finding the retraction is enough: a retracted paper in
             # the shortlist is quoted as evidence downstream.
             dropped += 1
@@ -1223,7 +1234,7 @@ def _execute_literature_screen(
         all_rows.append(row)
         # Stage 4 drops retracted records, but a resumed or hand-edited run can
         # still carry them; never let one reach the shortlist.
-        if row.get("retracted"):
+        if _truthy(row.get("retracted")):
             retracted_dropped += 1
             continue
         title = str(row.get("title", "")).lower()
@@ -1256,7 +1267,7 @@ def _execute_literature_screen(
         filtered_rows = [
             row
             for row in _parse_jsonl_rows(candidates_text)
-            if not row.get("retracted")
+            if not _truthy(row.get("retracted"))
         ]
         logger.warning(
             "[literature] Keyword prefilter dropped every candidate; "
@@ -1390,7 +1401,7 @@ def _execute_literature_screen(
             else [
                 row
                 for row in _parse_jsonl_rows(candidates_text)
-                if not row.get("retracted")
+                if not _truthy(row.get("retracted"))
             ][:_MIN_SHORTLIST]
         )
         for idx, item in enumerate(rows):
@@ -1446,7 +1457,7 @@ def _execute_literature_screen(
         for row in filtered_rows:
             if len(shortlist) >= _MIN_SHORTLIST:
                 break
-            if row.get("retracted"):
+            if _truthy(row.get("retracted")):
                 continue
             title = str(row.get("title", "")).lower().strip()
             if title and title in present:
