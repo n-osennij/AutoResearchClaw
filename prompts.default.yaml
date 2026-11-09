@@ -852,6 +852,7 @@ stages:
       Candidates JSONL:
       {candidates_text}
     json_mode: true
+    max_tokens: 8192
   knowledge_extract:
     system: You extract high-signal evidence cards from papers.
     user: |-
@@ -869,7 +870,8 @@ stages:
       Output markdown with sections: Cluster Overview, Cluster 1..N, Gap 1..N, Prioritized Opportunities.
       When a finding rests only on a preprint (bioRxiv/medRxiv/arXiv), say so and label it unverified — never present it as peer-reviewed. State the evidence level (preprint, randomised trial, systematic review, cohort, in-vitro) wherever it changes how much weight a claim deserves.
       Topic: {topic}
-      {domain_context}Cards context:
+      {domain_context}
+      Cards context:
       {cards_context}
     max_tokens: 8192
   hypothesis_gen:

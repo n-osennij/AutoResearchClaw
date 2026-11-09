@@ -453,14 +453,22 @@ def normalise_title(title: str) -> str:
 
 
 def _title_is_latin(title: str) -> bool:
-    """True when the title is Latin or Greek script throughout.
-
-    Normalisation keeps only ASCII letters, so a CJK or Cyrillic title loses
-    its distinctive part: "研究一：results" and "研究二：results" both reduce to
-    "results" and would be merged into a single paper. Such titles are simply
-    not used as a dedup key — their DOI/arXiv id still is.
-    """
+    """True when the title is Latin or Greek script throughout."""
     return all(ord(ch) < 0x0400 for ch in title if not ch.isspace())
+
+
+def _canonical_title(title: str) -> str:
+    """Dedup key for a title, preserving non-Latin script.
+
+    ASCII-only normalisation reduces "研究一：results" and "研究二：results" to
+    the same key, so CJK titles are keyed on a script-preserving form instead
+    of being dropped: without a key, two records of the same Chinese paper
+    (Crossref + CNKI) stay separate rows, references and bibtex entries.
+    """
+    if _title_is_latin(title):
+        return normalise_title(title)
+    folded = unicodedata.normalize("NFKC", title).casefold()
+    return " ".join(folded.split()).strip(" .,:;!?…")
 
 
 def _carry_metadata(old: Paper, new: Paper) -> Paper:
@@ -485,7 +493,14 @@ def _carry_metadata(old: Paper, new: Paper) -> Paper:
     if old.mesh_terms and not set(old.mesh_terms) <= set(new.mesh_terms):
         changes["mesh_terms"] = tuple(dict.fromkeys((*new.mesh_terms, *old.mesh_terms)))
     if old.pub_types and not set(old.pub_types) <= set(new.pub_types):
-        changes["pub_types"] = tuple(dict.fromkeys((*new.pub_types, *old.pub_types)))
+        # A journal record must not inherit the loser's preprint label: the
+        # Type column would then say "Preprint" for peer-reviewed work.
+        merged_types = tuple(
+            dict.fromkeys((*new.pub_types, *old.pub_types))
+        )
+        changes["pub_types"] = tuple(
+            t for t in merged_types if new.is_preprint or t.casefold() != "preprint"
+        )
     if old.pdf_url and not new.pdf_url:
         changes["pdf_url"] = old.pdf_url
     return replace(merged, **changes) if changes else merged
@@ -526,8 +541,8 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
             seen_doi[normalise_doi(p.doi)] = idx
         if p.arxiv_id:
             seen_arxiv[p.arxiv_id.strip()] = idx
-        norm = normalise_title(p.title)
-        if norm and _title_is_latin(p.title):
+        norm = _canonical_title(p.title)
+        if norm:
             seen_title[norm] = idx
 
     def _merge_duplicate(idx: int, paper: Paper) -> None:
@@ -542,9 +557,10 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
         if _prefer_published(kept, paper):
             result[idx] = _carry_metadata(kept, paper)
         else:
-            # The candidate loses, but its flags and identifiers still count:
-            # the discarded copy may be the only record marked retracted or
-            # carrying an expression of concern.
+            # The candidate loses, but its flags still count: the discarded
+            # copy may be the only record marked retracted or carrying an
+            # expression of concern. Its DOI/arXiv id keeps pointing at the
+            # survivor through ``_update_indices`` below.
             result[idx] = _carry_metadata(paper, kept)
         # Both records' identifiers now point at the survivor: a third record
         # that only carries the discarded one's arXiv id must not become a
@@ -573,7 +589,7 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
 
         # Check fuzzy title
         if not is_dup:
-            norm = normalise_title(paper.title)
+            norm = _canonical_title(paper.title)
             if norm and norm in seen_title:
                 idx = seen_title[norm]
                 _merge_duplicate(idx, paper)
@@ -603,8 +619,17 @@ def _suffix(n: int) -> str:
     return letters
 
 
+def _entry_key(entry: str) -> str:
+    """Return the cite key inside one rendered entry, or ""."""
+    match = _KEY_RE.match(entry)
+    return match.group(2).strip() if match else ""
+
+
 def uniquify_bibtex_entry(
-    entry: str, seen: dict[str, int]
+    entry: str,
+    seen: dict[str, int],
+    *,
+    reserved: set[str] | None = None,
 ) -> tuple[str, str]:
     """Give one rendered entry a key nobody used yet; return (entry, key).
 
@@ -619,23 +644,36 @@ def uniquify_bibtex_entry(
     key = match.group(2).strip() if match else ""
     if not key:
         return entry, ""  # unparseable: keep it, cannot rename safely
-    count = seen.get(key, 0)
-    seen[key] = count + 1
+    # BibTeX matches keys case-insensitively (biber rejects a case mismatch
+    # outright), so "Smith2024" and "smith2024" are the same key to the
+    # compiler even though they are different strings to Python.
+    fold = key.casefold()
+    count = seen.get(fold, 0)
+    seen[fold] = count + 1
     if not count:
+        # First use of this key keeps it, even though the same key is in
+        # ``reserved`` — that entry is the one that owns it.
         return entry, key
     # Skip candidates that collide with a key already in use: a key made of the
     # suffix letter itself ("aaaa…") truncates to the same string, so a blind
-    # rename would emit the duplicate again.
-    attempt = count
+    # rename would emit the duplicate again. ``reserved`` holds every key that
+    # appears later in the same batch: renaming onto one of them would hand
+    # paper #2 the key paper #3 legitimately carries.
+    attempt = count or 1
     while attempt < count + 1000:
         suffix = _suffix(attempt - 1)
         new_key = key[: max(1, 40 - len(suffix))] + suffix
-        if new_key != key and new_key not in seen:
+        new_fold = new_key.casefold()
+        if (
+            new_fold != fold
+            and new_fold not in seen
+            and (reserved is None or new_fold not in reserved)
+        ):
             break
         attempt += 1
     else:  # pragma: no cover - 1000 consecutive collisions
         return entry, key
-    seen[new_key] = 1
+    seen[new_fold] = 1
     renamed = (
         entry[: match.start()]
         + match.group(1)
@@ -655,7 +693,12 @@ def dedupe_bibtex_entries(entries: Sequence[str]) -> list[str]:
     one.
     """
     seen: dict[str, int] = {}
-    return [uniquify_bibtex_entry(entry, seen)[0] for entry in entries]
+    # Two passes: every key present in the batch is claimed in advance, so a
+    # generated suffix can never land on one that a later entry already has.
+    reserved = {fold for fold in (_entry_key(e).casefold() for e in entries) if fold}
+    return [
+        uniquify_bibtex_entry(entry, seen, reserved=reserved)[0] for entry in entries
+    ]
 
 
 def papers_to_bibtex(papers: Sequence[Paper]) -> str:

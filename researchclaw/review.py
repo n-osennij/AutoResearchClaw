@@ -82,14 +82,31 @@ def _short(text: Any, limit: int) -> str:
     return value[: limit - 1].rstrip() + "…"
 
 
-def _cell(text: Any) -> str:
-    """Escape a value for a markdown table cell.
+def _cell(text: Any, limit: int = 200) -> str:
+    """Escape a value for a markdown table cell, then truncate.
 
-    Backslash first: escaping the pipe first and the backslash afterwards turns
-    ``\\|`` into ``\\\\|``, which markdown renders as a literal backslash plus a
-    cell split — one cell becomes two.
+    Order matters twice. Escaping the pipe before the backslash turns ``\\|``
+    into ``\\\\|``, which renders as a literal backslash plus a cell split — one
+    cell becomes two. And truncating before escaping (the old order) could emit
+    a half-written escape and silently doubled the 200-char budget.
+
+    Titles and venues come from external APIs and LLM output, so markup is
+    neutralised too: ``![](http://attacker/p.png)`` in a title would otherwise
+    render an image, and ``<img onerror=…>`` survives into any HTML renderer.
     """
-    return _short(text, 200).replace("\\", "\\\\").replace("|", "\\|")
+    value = " ".join(str(text or "").split())
+    value = (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("`", "\\`")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace("!", "\\!")
+    )
+    return _short(value, limit)
 
 
 def _md_section(text: str, heading: str) -> str:
@@ -241,11 +258,23 @@ def _screening_section(
     total = len(candidates) or int((search_meta or {}).get("total_candidates") or 0)
     lines = ["## Screening", ""]
     lines.append(f"- **Collected candidates:** {total}")
-    screened = meta.get("candidates_screened")
+    screened = meta.get("candidates_after_prefilter")
+    if screened is None:
+        screened = meta.get("candidates_screened")
     if screened is None:
         screened = meta.get("candidates_prefiltered")
     if screened is not None:
         lines.append(f"- **Passed keyword prefilter:** {screened}")
+    if meta.get("safety_valve"):
+        lines.append(
+            "- **Retraction safety valve:** the keyword prefilter was empty, so "
+            "the screener saw the raw candidates and retracted papers were "
+            "dropped afterwards"
+        )
+    if meta.get("shortlist_below_minimum"):
+        lines.append(
+            "- **Shortlist:** below the configured minimum after retraction removal"
+        )
     if not shortlist and str(meta.get("outcome")) == "model_rejected_all":
         lines.append("- **Shortlist:** empty — the screener rejected every candidate")
         return "\n".join(lines) + "\n"
@@ -299,14 +328,19 @@ def _paper_kind(row: dict[str, Any]) -> str:
 
 
 def _row_title(row: dict[str, Any]) -> str:
-    """Title cell with retraction/concern markers."""
-    title = _cell(row.get("title", ""))
+    """Title cell with retraction/concern markers.
+
+    The marker counts against the 200-char budget: appending it after the cell
+    was escaped let a single row grow to ~440 chars.
+    """
     marks = []
     if row.get("retracted"):
         marks.append("retracted")
     if row.get("concern"):
         marks.append("expression of concern")
-    return f"{title} ⚠️ ({', '.join(marks)})" if marks else title
+    marker = f" ⚠️ ({', '.join(marks)})" if marks else ""
+    title = _cell(row.get("title", ""), max(60, 200 - len(marker)))
+    return f"{title}{marker}"
 
 
 def _cards_section(run_dir: Path) -> str:
@@ -339,9 +373,9 @@ def _references_section(shortlist: list[dict[str, Any]]) -> str:
         return ""
     lines = ["## References", ""]
     for idx, row in enumerate(shortlist, 1):
-        title = _short(row.get("title", "Untitled"), 200)
+        title = _cell(row.get("title", "Untitled"), 200)
         year = row.get("year", "")
-        venue = _short(row.get("venue", ""), 120)
+        venue = _cell(row.get("venue", ""), 120)
         link = row.get("url") or row.get("doi") or ""
         suffix = f" <{link}>" if link else ""
         venue_part = f" *{venue}*." if venue else ""

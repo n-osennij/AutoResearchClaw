@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from researchclaw.adapters import AdapterBundle
@@ -43,10 +44,15 @@ def _execute_synthesis(
             """Sort card-1, card-2, … card-10 numerically.
 
             Lexicographic order puts card-10 before card-2, so a 24-card cap
-            silently dropped the early cards of any run with >9 cards.
+            silently dropped the early cards of any run with >9 cards. Only
+            the ``card-N`` shape is read as a number: a model-chosen slug like
+            ``attention-2017`` must not claim slot 2017, and a file without
+            digits goes last instead of displacing a real card.
             """
-            digits = "".join(ch for ch in path.stem if ch.isdigit())
-            return (int(digits) if digits else 0, path.stem)
+            match = re.fullmatch(r"card-(\d+)", path.stem)
+            if match:
+                return (0, f"{int(match.group(1)):09d}")
+            return (1, path.stem)
 
         all_cards = sorted(Path(cards_path).glob("*.md"), key=_card_order)
         snippets = [path.read_text(encoding="utf-8") for path in all_cards[:24]]
@@ -54,9 +60,11 @@ def _execute_synthesis(
         if len(all_cards) > 24:
             note = (
                 f"NOTE: {len(all_cards)} evidence cards exist; the first 24 are "
-                "shown above and the rest were not passed to this call."
+                "above and the rest were not passed to this call."
             )
-            cards_context = note + "\n\n" + cards_context
+            # The note goes *after* the cards it describes: prepended, it told
+            # the model to look up at content that followed it.
+            cards_context = cards_context + "\n\n" + note
 
     if llm is not None:
         _pm = prompts or PromptManager()

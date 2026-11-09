@@ -1179,3 +1179,18 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
         "max_tokens": 4096,
     },
 }
+
+
+def format_time_budget(experiment: Any) -> str:
+    """One-line compute budget for the ``{time_budget}`` placeholder.
+
+    Returns an empty string when the object carries no budget: the
+    ``code_generation`` prompt always asks for it, and a stub config in a test
+    (or a caller that only fills the fields it needs) used to crash the
+    str-format call rather than render an empty budget.
+    """
+    total = getattr(experiment, "time_budget_sec", 0) or 0
+    per_condition = getattr(experiment, "per_condition_budget_sec", 0) or 0
+    if not total:
+        return ""
+    return f"{total}s (per condition: {per_condition}s)"

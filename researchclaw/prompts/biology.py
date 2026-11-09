@@ -1,10 +1,11 @@
 """Biology (constraint-based metabolic modelling) prompt bank.
 
 This bank re-uses the ML prompt bank verbatim for every stage *except* the
-five whose prose is biology-flavoured: ``hypothesis_gen``,
-``experiment_design``, ``code_generation``, ``result_analysis`` and
-``paper_outline``. The overrides keep the ML bank's exact placeholder set,
-``json_mode`` flag and ``max_tokens`` budget so the parity contract in
+seven whose prose is biology-flavoured: ``hypothesis_gen``,
+``experiment_design``, ``code_generation``, ``result_analysis``,
+``paper_outline``, ``literature_screen`` and ``knowledge_extract``. The
+overrides keep the ML bank's exact placeholder set, ``json_mode`` flag and
+``max_tokens`` budget so the parity contract in
 :mod:`tests.test_hep_prompt_hygiene` (and any future strict parity test)
 holds without modification.
 
@@ -83,7 +84,7 @@ STAGES["hypothesis_gen"] = {
         "steady-state by construction).\n"
         "- ML-style 'predict X with a neural network' — FBA is a linear "
         "program; learning is not the right tool here.\n\n"
-        "{domain_context}"
+        "{domain_context}\n"
         "Synthesis:\n{synthesis}"
     ),
 }
@@ -543,6 +544,7 @@ STAGES["literature_screen"] = {
         "Candidates JSONL:\n{candidates_text}"
     ),
     "json_mode": True,
+    "max_tokens": 8192,
 }
 
 
@@ -645,6 +647,25 @@ DEBATE_ROLES_ANALYSIS: dict[str, dict[str, str]] = {
         ),
     },
 }
+
+
+# ── debate roles need the context they debate ──────────────────────────────
+# The ML/HEP role prompts end with the topic + synthesis (hypothesis debate) or
+# the experiment preamble + data (analysis debate). The biology prose above is
+# context-free, so without this suffix the debate ran on role instructions
+# alone: no synthesis to invent from, no metrics to criticise.
+
+for _role in DEBATE_ROLES_HYPOTHESIS.values():
+    _role["user"] = (
+        _role["user"].rstrip()
+        + "\n\nTopic: {topic}\nSynthesis:\n{synthesis}"
+    )
+
+for _role in DEBATE_ROLES_ANALYSIS.values():
+    _role["user"] = (
+        _role["user"].rstrip()
+        + "\n\n{preamble}\n{data_context}\n{context}"
+    )
 
 
 # Sanity: silence unused-import warnings if the ML debate banks ever shrink.

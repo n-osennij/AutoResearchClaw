@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -1082,6 +1083,19 @@ _EVIDENCE_FIELDS = (
 )
 
 
+def _title_key(title: object) -> str:
+    """Match key for a title the model echoed back from the shortlist.
+
+    Models restate titles with a trailing period, an appended "et al." or
+    re-escaped LaTeX. A punctuation-exact key silently loses every provenance
+    field for that row, so the key is normalised the same way the dedup key is.
+    """
+    text = unicodedata.normalize("NFKC", str(title or "")).casefold()
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\bet al\.?$", "", text).strip()
+    return text.rstrip(" .,;:!?…—-/")
+
+
 def _row_keys(row: dict[str, Any]) -> list[str]:
     """Identifiers a shortlist row can be matched back on."""
     keys = []
@@ -1089,34 +1103,52 @@ def _row_keys(row: dict[str, Any]) -> list[str]:
         value = str(row.get(field, "")).strip().lower()
         if value:
             keys.append(f"{field}:{value}")
-    title = str(row.get("title", "")).strip().lower()
+    title = _title_key(row.get("title"))
     if title:
         keys.append(f"title:{title}")
     return keys
 
 
 def _provenance_block(row: dict[str, Any]) -> dict[str, Any]:
-    """Evidence metadata a knowledge card must carry forward."""
+    """Evidence metadata a knowledge card must carry forward.
+
+    Only positive flags earn prompt space: ``retracted: False`` on all 24
+    cards is pure ballast, while ``retracted: None`` (which the old condition
+    let through) reads as a machine artefact to any downstream model.
+    """
     block: dict[str, Any] = {}
     for field in _EVIDENCE_FIELDS:
         value = row.get(field)
-        if value in (None, "", [], (), False) and field != "retracted":
+        if field in {"pub_types", "mesh_terms"}:
+            if isinstance(value, (list, tuple)):
+                joined = ", ".join(str(item) for item in value if item)
+                if joined:
+                    block[field] = joined
+            elif value:
+                block[field] = str(value)
             continue
-        if field == "pub_types" and isinstance(value, (list, tuple)):
-            block[field] = list(value)
-        else:
-            block[field] = value
+        if field == "retracted":
+            if value:
+                block[field] = True
+            continue
+        if value in (None, "", [], (), False):
+            continue
+        block[field] = value
     return block
 
 
 def _reapply_provenance(
     shortlist: list[dict[str, Any]], source_rows: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, int]:
     """Restore evidence metadata from the pre-screen rows onto the shortlist.
 
     The candidate rows are the authoritative record: the model may restate a
     title but never a ``pmid`` or a preprint flag. Rows the pre-screen dropped
     as retracted are dropped here too, since the model is not told about them.
+
+    Returns ``(rows, dropped_retracted, unmatched)``; a non-zero *unmatched*
+    means the model echoed rows that could not be tied to a source record, the
+    failure mode that otherwise loses provenance silently.
     """
     index: dict[str, dict[str, Any]] = {}
     for row in source_rows:
@@ -1124,6 +1156,7 @@ def _reapply_provenance(
             index.setdefault(key, row)
     merged: list[dict[str, Any]] = []
     dropped = 0
+    unmatched = 0
     for row in shortlist:
         match = None
         for key in _row_keys(row):
@@ -1136,13 +1169,24 @@ def _reapply_provenance(
                 continue
             for field in _EVIDENCE_FIELDS:
                 value = match.get(field)
-                if value not in (None, "", [], (), False) or field == "retracted":
+                if field == "retracted":
+                    # The model may have found a retraction the backend missed;
+                    # OR keeps it instead of erasing it with the source's False.
+                    row[field] = bool(value or row.get(field))
+                elif field in {"pub_types", "mesh_terms"}:
+                    if value not in (None, "", [], ()):
+                        row[field] = list(value) if isinstance(value, (list, tuple)) else value
+                elif value not in (None, "", [], (), False):
                     row[field] = value
-        elif row.get("retracted"):
+        else:
+            unmatched += 1
+        if row.get("retracted"):
+            # Either side finding the retraction is enough: a retracted paper in
+            # the shortlist is quoted as evidence downstream.
             dropped += 1
             continue
         merged.append(row)
-    return merged, dropped
+    return merged, dropped, unmatched
 
 
 def _execute_literature_screen(
@@ -1164,6 +1208,7 @@ def _execute_literature_screen(
         config.research.topic, config.research.domains
     )
     filtered_rows: list[dict[str, Any]] = []
+    all_rows: list[dict[str, Any]] = []
     candidates_seen = 0
     dropped_count = 0
     retracted_dropped = 0
@@ -1172,6 +1217,10 @@ def _execute_literature_screen(
         if not isinstance(row, dict):
             continue
         candidates_seen += 1
+        # Kept separately from ``filtered_rows``: a retracted row never reaches
+        # the model, but if the model echoes one anyway it has to be matched to
+        # the retraction record rather than waved through as unmatched.
+        all_rows.append(row)
         # Stage 4 drops retracted records, but a resumed or hand-edited run can
         # still carry them; never let one reach the shortlist.
         if row.get("retracted"):
@@ -1195,18 +1244,28 @@ def _execute_literature_screen(
             retracted_dropped,
         )
 
-    prefiltered_rows = list(filtered_rows)
+    prefiltered_rows: list[dict[str, Any]] = []
+    safety_valve = False
     # If pre-filter dropped everything, fall back to original (safety valve)
     if not filtered_rows:
         # Safety valve: the keyword pre-filter dropped everything. Re-read the
         # raw rows, but keep the retraction filter — otherwise a retracted
         # paper that the pre-filter rejected for off-topic content comes
         # straight back and ends up in the shortlist.
+        safety_valve = True
         filtered_rows = [
             row
             for row in _parse_jsonl_rows(candidates_text)
             if not row.get("retracted")
         ]
+        logger.warning(
+            "[literature] Keyword prefilter dropped every candidate; "
+            "screening the raw %d row(s) instead",
+            len(filtered_rows),
+        )
+    # Captured after the valve: the earlier capture reported 0 for a run that
+    # screened N rows, which made ``screen_meta.json`` contradict itself.
+    prefiltered_rows = list(filtered_rows)
     # Sort by keyword overlap (descending) before the char cap below drops
     # anything — candidates arrive in raw search order (whichever query/
     # source happened to return them), not relevance order. Without this,
@@ -1364,12 +1423,50 @@ def _execute_literature_screen(
         )
     # The model echoes rows, so provenance comes back from the pre-screen rows
     # rather than from the model's memory of them.
-    shortlist, retracted_in_shortlist = _reapply_provenance(shortlist, filtered_rows)
+    shortlist, retracted_in_shortlist, unmatched_shortlist = _reapply_provenance(
+        shortlist, all_rows
+    )
     if retracted_in_shortlist:
         logger.warning(
             "Stage 5: dropped %d retracted paper(s) that the screen kept",
             retracted_in_shortlist,
         )
+    if unmatched_shortlist:
+        logger.warning(
+            "Stage 5: %d shortlisted row(s) could not be matched to a "
+            "candidate — their pmid/is_preprint/pub_types are missing",
+            unmatched_shortlist,
+        )
+    # Dropping retracted rows can push the shortlist back under the minimum
+    # the supplement above enforced; top it up from rows that survived.
+    shortlist_below_minimum = False
+    if len(shortlist) < _MIN_SHORTLIST:
+        present = {str(row.get("title", "")).lower().strip() for row in shortlist}
+        present_ids = {key for row in shortlist for key in _row_keys(row)}
+        for row in filtered_rows:
+            if len(shortlist) >= _MIN_SHORTLIST:
+                break
+            if row.get("retracted"):
+                continue
+            title = str(row.get("title", "")).lower().strip()
+            if title and title in present:
+                continue
+            if present_ids & set(_row_keys(row)):
+                continue
+            row.setdefault("relevance_score", 0.5)
+            row.setdefault("quality_score", 0.5)
+            row.setdefault("keep_reason", "Restored to minimum after retraction drop")
+            shortlist.append(row)
+            present.add(title)
+            present_ids.update(_row_keys(row))
+        shortlist_below_minimum = len(shortlist) < _MIN_SHORTLIST
+        if shortlist_below_minimum:
+            logger.warning(
+                "Stage 5: shortlist has %d paper(s), below the minimum of %d — "
+                "the candidate pool does not hold enough non-retracted papers",
+                len(shortlist),
+                _MIN_SHORTLIST,
+            )
 
     out = stage_dir / "shortlist.jsonl"
     _write_jsonl(out, shortlist)
@@ -1381,13 +1478,17 @@ def _execute_literature_screen(
             {
                 "outcome": "parsed" if shortlist and not parse_failed else "fallback",
                 "candidates_seen": candidates_seen,
+                "candidates_screened": len(prefiltered_rows),
                 "candidates_after_prefilter": len(prefiltered_rows),
                 "candidates_prefilter_dropped": dropped_count,
                 "candidates_retracted_dropped": retracted_dropped,
                 "candidates_truncated": candidates_truncated,
+                "safety_valve": safety_valve,
                 "chars_sent": len(candidates_text),
                 "shortlist_size": len(shortlist),
                 "shortlist_retracted_dropped": retracted_in_shortlist,
+                "shortlist_unmatched": unmatched_shortlist,
+                "shortlist_below_minimum": shortlist_below_minimum,
                 "parse_failed": parse_failed,
                 "template_fallback": template_fallback,
             },
@@ -1506,10 +1607,12 @@ def _execute_knowledge_extract(
     # card is the only evidence stage 7+ sees, and without these fields a
     # preprint is indistinguishable from a randomised trial.
     rows_by_key: dict[str, dict[str, Any]] = {}
-    for paper in _parse_jsonl_rows(shortlist):
+    shortlist_rows = _parse_jsonl_rows(shortlist)
+    for paper in shortlist_rows:
         for key in _row_keys(paper):
             rows_by_key.setdefault(key, paper)
 
+    unmatched_cards = 0
     for idx, card in enumerate(cards):
         card_id = _safe_filename(str(card.get("card_id", f"card-{idx + 1}")))
         if not card.get("provenance"):
@@ -1518,6 +1621,14 @@ def _execute_knowledge_extract(
                 if row is not None:
                     card["provenance"] = _provenance_block(row)
                     break
+        if not card.get("provenance"):
+            # The card schema the model is given has no paper_id, so its
+            # title is often reworded. The prompt preserves shortlist order,
+            # which makes the position a reliable fallback.
+            if idx < len(shortlist_rows):
+                card["provenance"] = _provenance_block(shortlist_rows[idx])
+            if not card.get("provenance"):
+                unmatched_cards += 1
         parts = [f"# {card.get('title', card_id)}", ""]
         for key in (
             "cite_key",
@@ -1539,10 +1650,16 @@ def _execute_knowledge_extract(
         if isinstance(provenance, dict) and provenance:
             parts.append("## Provenance")
             for field, value in provenance.items():
-                if value not in (None, "", [], (), False) or field == "retracted":
+                if value not in (None, "", [], (), False):
                     parts.append(f"- {field}: {value}")
             parts.append("")
         (cards_dir / f"{card_id}.md").write_text("\n".join(parts), encoding="utf-8")
+    if unmatched_cards:
+        logger.warning(
+            "Stage 6: %d card(s) carry no provenance — no shortlist row matched "
+            "by key or position",
+            unmatched_cards,
+        )
     return StageResult(
         stage=Stage.KNOWLEDGE_EXTRACT,
         status=StageStatus.DONE,

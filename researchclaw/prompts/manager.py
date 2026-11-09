@@ -42,11 +42,22 @@ def _render(template: str, variables: dict[str, str]) -> str:
     Only bare ``{word_chars}`` tokens are substituted — JSON schema examples
     like ``{candidates:[...]}`` are left untouched because the regex requires
     the closing ``}`` immediately after the identifier.
+
+    An unresolved placeholder is logged: it reaches the model as a literal
+    ``{time_budget}``, which reads as an instruction the model was never given,
+    and the only other symptom is a slightly worse answer. The warning names
+    the token so the missing kwarg is one grep away.
     """
 
     def _replacer(match: re.Match[str]) -> str:
         key = match.group(1)
-        return str(variables[key]) if key in variables else match.group(0)
+        if key in variables:
+            return str(variables[key])
+        logger.warning(
+            "Prompt placeholder {%s} was not supplied; it is rendered literally",
+            key,
+        )
+        return match.group(0)
 
     return re.sub(r"\{(\w+)\}", _replacer, template)
 

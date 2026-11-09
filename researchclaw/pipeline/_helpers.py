@@ -684,13 +684,20 @@ def _extract_multi_file_blocks(content: str) -> dict[str, str]:
 
 
 def _parse_jsonl_rows(text: str) -> list[dict[str, Any]]:
+    """Parse JSON-lines output, skipping prose and empty objects.
+
+    A line that is not JSON parses to ``{}``; keeping those would let a prose
+    block ("--- Web Search Context ---") masquerade as N empty rows, so a
+    caller that checks ``if not rows`` or filters ``row.get("retracted")`` sees
+    content that does not exist.
+    """
     rows: list[dict[str, Any]] = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
         parsed = _safe_json_loads(line, {})
-        if isinstance(parsed, dict):
+        if isinstance(parsed, dict) and parsed:
             rows.append(parsed)
     return rows
 

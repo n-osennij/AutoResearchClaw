@@ -32,6 +32,7 @@ from researchclaw.pipeline._helpers import (
 )
 from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
+from researchclaw.prompts.shared import format_time_budget
 
 logger = logging.getLogger(__name__)
 
@@ -732,6 +733,7 @@ def _execute_code_generation(
             pkg_hint=pkg_hint + "\n" + compute_budget + "\n" + extra_guidance,
             exp_plan=exp_plan,
             metric_direction_hint=_md_hint,
+            time_budget=format_time_budget(config.experiment),
         )
         # R13-3: Use higher max_tokens for reasoning models (they consume tokens
         # for internal chain-of-thought). Retry once with even higher limit on empty.

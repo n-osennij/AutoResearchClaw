@@ -310,6 +310,10 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "Candidates JSONL:\n{candidates_text}"
         ),
         "json_mode": True,
+        # Up to ~25 rows are echoed back with five extra evidence fields each;
+        # an unbounded output budget turned truncation into a silent
+        # ``parse_failed`` instead of a visible cut.
+        "max_tokens": 8192,
     },
     "knowledge_extract": {
         "system": "You extract high-signal evidence cards from papers.",
@@ -338,7 +342,7 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "trial, systematic review, cohort, in-vitro) wherever it changes "
             "how much weight a claim deserves.\n"
             "Topic: {topic}\n"
-            "{domain_context}"
+            "{domain_context}\n"
             "Cards context:\n{cards_context}"
         ),
         "max_tokens": 8192,

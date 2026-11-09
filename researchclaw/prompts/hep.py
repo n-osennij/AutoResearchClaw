@@ -368,9 +368,13 @@ STAGES: dict[str, dict[str, Any]] = {
             "(relevance_score >= 0.7).\n"
             "6. QUALITY FLOOR: Reject papers without an abstract, arXiv "
             "number, or citation count (likely not real hep-ph papers).\n"
+            "7. EXPERIMENTAL PROVENANCE IS RANKED: name the collaboration and "
+            "run when reporting a limit, and never merge a recast limit with "
+            "the original as if both were measurements.\n"
             "Candidates JSONL:\n{candidates_text}"
         ),
         "json_mode": True,
+        "max_tokens": 8192,
     },
     "knowledge_extract": {
         "system": (
@@ -396,7 +400,8 @@ STAGES: dict[str, dict[str, Any]] = {
             "units.\n"
             "- limitations: dominant theoretical/experimental systematics.\n"
             "IMPORTANT: If the input contains cite_key fields, preserve them "
-            "exactly in the output.\n"
+            "exactly in the output. Never invent a cite_key, DOI or arXiv "
+            "number: copy it from the shortlist row or omit the field.\n"
             "Shortlist:\n{shortlist}"
         ),
         "json_mode": True,
@@ -431,8 +436,12 @@ STAGES: dict[str, dict[str, Any]] = {
             "or ML methods. Each opportunity should be expressible as: "
             "'Study X using observable Y in experiment Z, closing the gap "
             "at parameter region (…)'.\n"
+            "If the evidence cards disagree, name the disagreement and say which side is "
+            "experimentally stronger (collaboration measurement over recast, published "
+            "over preprint) instead of averaging them into a claim. A gap is not a "
+            "contradiction: say which region or channel was never measured.\n"
             "Topic: {topic}\n"
-            "{domain_context}"
+            "{domain_context}\n"
             "Cards context:\n{cards_context}"
         ),
         "max_tokens": 8192,

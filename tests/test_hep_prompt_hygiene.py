@@ -322,3 +322,42 @@ def test_hep_bank_vocabulary_present(token: str) -> None:
     assert token.lower() in joined.lower(), (
         f"Expected HEP vocabulary token {token!r} missing from bank output"
     )
+
+
+# ---------------------------------------------------------------------------
+# Every bank must satisfy the same contract, not only HEP
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("domain", ["hep_ph", "biology_metabolic"])
+def test_every_bank_keeps_the_ml_stage_contract(domain: str) -> None:
+    """A domain bank overrides prose, never placeholders/flags/budgets.
+
+    Biology also ships its own ``literature_screen``/``knowledge_extract``
+    overrides now, so a typo in a placeholder there would only surface at
+    runtime as a literal ``{venue_guidance}`` in the prompt.
+    """
+    pm_ml = PromptManager(domain="ml")
+    pm_other = PromptManager(domain=domain)
+    assert pm_ml.stage_names() == pm_other.stage_names(), domain
+    for stage in pm_ml.stage_names():
+        assert _stage_placeholders(pm_ml, stage) == _stage_placeholders(pm_other, stage), (
+            stage, domain
+        )
+        assert pm_ml.json_mode(stage) == pm_other.json_mode(stage), (stage, domain)
+        assert pm_ml.max_tokens(stage) == pm_other.max_tokens(stage), (stage, domain)
+
+
+@pytest.mark.parametrize("domain", ["ml", "hep_ph", "biology_metabolic"])
+def test_debate_roles_pass_the_context_they_debate(domain: str) -> None:
+    """A role prompt without placeholders debates an empty room.
+
+    The biology bank rewrote every debate role as context-free prose, which
+    silently dropped the synthesis (hypothesis debate) and the metrics
+    (analysis debate) from those calls.
+    """
+    pm = PromptManager(domain=domain)
+    for role in pm.debate_roles_hypothesis().values():
+        assert "{topic}" in role["user"] and "{synthesis}" in role["user"], domain
+    for role in pm.debate_roles_analysis().values():
+        assert "{data_context}" in role["user"], domain

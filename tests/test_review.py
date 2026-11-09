@@ -172,3 +172,47 @@ class TestEvidenceTypeColumn:
         assert "preprint" in review
         assert "retracted" in review
         assert "Randomized Controlled Trial" in review
+
+    def test_reference_list_carries_the_flags(self, tmp_path: Path) -> None:
+        """The numbered reference list is what a reader cites from: a
+        preprint or a retraction must be readable there, not only in the
+        table row."""
+        run = _run_dir(tmp_path)
+        shortlist = run / "stage-05" / "shortlist.jsonl"
+        rows = [
+            json.loads(line)
+            for line in shortlist.read_text(encoding="utf-8").splitlines()
+        ]
+        rows[0]["is_preprint"] = True
+        rows[1]["retracted"] = True
+        shortlist.write_text(
+            "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+        )
+        review = generate_literature_review(run)
+        refs = review.split("## References", 1)[1]
+        assert "[preprint]" in refs
+        assert "[RETRACTED]" in refs
+
+    def test_backslashes_do_not_break_the_table(self, tmp_path: Path) -> None:
+        run = _run_dir(tmp_path)
+        shortlist = run / "stage-05" / "shortlist.jsonl"
+        rows = [
+            json.loads(line)
+            for line in shortlist.read_text(encoding="utf-8").splitlines()
+        ]
+        rows[0]["title"] = "Path C:\\temp\\x and a | pipe"
+        shortlist.write_text(
+            "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+        )
+        review = generate_literature_review(run)
+        assert "C:\\\\temp\\\\x and a \\| pipe" in review
+
+    def test_a_long_escaped_title_keeps_its_cell_closed(self) -> None:
+        # Escaping doubles the pipe count; truncation must not cut an
+        # escape in half and leave a dangling backslash in the table.
+        from researchclaw.review import _cell
+
+        cell = _cell("a|" * 120)
+        assert cell.count("|") - cell.count("\\|") == 0, cell[:80]
+        assert not cell.endswith("\\")
+        assert len(cell) <= 203
