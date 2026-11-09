@@ -39,6 +39,7 @@ writing/
 # Root-level config (local overrides, not committed)
 /config.yaml
 /config.arc.yaml
+/config.local.yaml
 # Editor/manual backups of the private config (PR #311 leaked one of these)
 /config.arc.yaml_backup
 /config.arc.yaml.*

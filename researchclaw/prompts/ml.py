@@ -323,6 +323,10 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "Extract structured knowledge cards from shortlist.\n"
             "Return JSON: {cards:[{card_id,title,cite_key,problem,method,"
             "data,metrics,findings,limitations,citation}]}.\n"
+            "Write one card per paper, at most twelve cards, in shortlist order. "
+            "Keep every field to one clause (at most 200 characters): a synthesis step "
+            "reads these cards, not a human, and a verbose answer overruns the output "
+            "budget and truncates the JSON.\n"
             "IMPORTANT: If the input contains cite_key fields, preserve them "
             "exactly in the output.\n"
             "Do not invent pmid, doi, year or venue: leave them out — they are "
@@ -330,6 +334,7 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "Shortlist:\n{shortlist}"
         ),
         "json_mode": True,
+        "max_tokens": 16384,
     },
     # ── Phase C: Knowledge Synthesis ─────────────────────────────────────
     "synthesis": {

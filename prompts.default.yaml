@@ -858,11 +858,13 @@ stages:
     user: |-
       Extract structured knowledge cards from shortlist.
       Return JSON: {cards:[{card_id,title,cite_key,problem,method,data,metrics,findings,limitations,citation}]}.
+      Write one card per paper, at most twelve cards, in shortlist order. Keep every field to one clause (at most 200 characters): a synthesis step reads these cards, not a human, and a verbose answer overruns the output budget and truncates the JSON.
       IMPORTANT: If the input contains cite_key fields, preserve them exactly in the output.
       Do not invent pmid, doi, year or venue: leave them out — they are copied from the source record downstream.
       Shortlist:
       {shortlist}
     json_mode: true
+    max_tokens: 16384
   synthesis:
     system: You are a synthesis specialist for literature reviews.
     user: |-

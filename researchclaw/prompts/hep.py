@@ -404,9 +404,14 @@ STAGES: dict[str, dict[str, Any]] = {
             "IMPORTANT: If the input contains cite_key fields, preserve them "
             "exactly in the output. Never invent a cite_key, DOI or arXiv "
             "number: copy it from the shortlist row or omit the field.\n"
+            "Write one card per paper, at most twelve cards, in shortlist order. "
+            "Keep every field to one clause (at most 200 characters): a synthesis step "
+            "reads these cards, not a human, and a verbose answer overruns the output "
+            "budget and truncates the JSON.\n"
             "Shortlist:\n{shortlist}"
         ),
         "json_mode": True,
+        "max_tokens": 16384,
     },
     # ── Phase C: Knowledge Synthesis ────────────────────────────────────── #
     "synthesis": {

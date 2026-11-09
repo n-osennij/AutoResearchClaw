@@ -1120,6 +1120,13 @@ def _truthy(value: object) -> bool:
     return bool(value)
 
 
+# How many papers one knowledge-extraction call turns into cards. The synthesis
+# prompt caps itself at 24 cards anyway, and a 55-paper prompt made the model
+# answer with more prose than the output budget holds.
+_MAX_CARDS = 12
+
+
+
 def _coerce_score(value: object) -> float:
     """Read a relevance/quality score the model emitted on whatever scale.
 
@@ -1715,17 +1722,59 @@ def _execute_knowledge_extract(
     if llm is not None:
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "knowledge_extract")
-        sp = _pm.for_stage("knowledge_extract", evolution_overlay=_overlay, shortlist=shortlist)
-        resp = _chat_with_prompt(
-            llm,
-            sp.system,
-            sp.user,
-            json_mode=sp.json_mode,
-            max_tokens=sp.max_tokens,
+        # One card per paper, and only the strongest papers: the model used to
+        # see all 55 shortlist rows and answer with 12k characters of prose,
+        # which truncated the JSON at the output budget and silently fell back
+        # to template cards with no content at all.
+        rows_for_cards = sorted(
+            _parse_jsonl_rows(shortlist),
+            key=lambda r: (
+                float(r.get("relevance_score") or 0),
+                float(r.get("quality_score") or 0),
+            ),
+            reverse=True,
+        )[:_MAX_CARDS]
+        cards_input = "\n".join(
+            json.dumps(r, ensure_ascii=False) for r in rows_for_cards
         )
-        payload = _safe_json_loads(resp.content, {})
-        if isinstance(payload, dict) and isinstance(payload.get("cards"), list):
-            cards = [item for item in payload["cards"] if isinstance(item, dict)]
+        if web_context:
+            cards_input += "\n\n--- Web Search Context ---\n" + web_context[:10_000]
+        sp = _pm.for_stage("knowledge_extract", evolution_overlay=_overlay, shortlist=cards_input)
+        raw_cards: Any = None
+        resp = None
+        for _attempt in range(2):
+            resp = _chat_with_prompt(
+                llm,
+                sp.system,
+                sp.user,
+                json_mode=sp.json_mode,
+                max_tokens=sp.max_tokens * (2**_attempt) if sp.max_tokens else None,
+            )
+            payload = _safe_json_loads(resp.content, {})
+            raw_cards = payload.get("cards") if isinstance(payload, dict) else None
+            if isinstance(raw_cards, list) and raw_cards:
+                break
+            if isinstance(raw_cards, list) or _attempt:
+                break
+            logger.info(
+                "Stage 6: card reply was unusable (finish=%r, %d chars); "
+                "retrying with a larger budget",
+                resp.finish_reason,
+                len(resp.content),
+            )
+        if isinstance(raw_cards, list):
+            cards = [item for item in raw_cards if isinstance(item, dict)]
+        if not cards:
+            (stage_dir / "cards_raw.txt").write_text(
+                (resp.content if resp is not None else "")[:_RAW_RESPONSE_CAP],
+                encoding="utf-8",
+            )
+            logger.warning(
+                "Stage 6: no knowledge cards in the model reply (finish=%r, "
+                "%d chars, kept in cards_raw.txt); falling back to template cards",
+                getattr(resp, "finish_reason", ""),
+                len(resp.content) if resp is not None else 0,
+            )
     if not cards:
         rows = _parse_jsonl_rows(shortlist)
         for idx, paper in enumerate(rows[:6]):
