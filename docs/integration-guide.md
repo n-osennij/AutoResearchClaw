@@ -195,6 +195,11 @@ extractor when `web_search.enable_pdf_extraction` is on (needs
 `stage-04/web_context.md`. `inter_query_delay_sec` paces queries, per-source
 pacing (1 req/s for S2 and OpenReview) is built in.
 
+`research.min_year` (default 2020) is the publication-year floor applied by every
+source; set it to `0` for topics whose foundations predate 2020. Screening then
+keeps the best ~15 papers and Stage 6 writes 6 knowledge cards — see the
+"Limits" note in `.agents/skills/researchclaw/SKILL.md`.
+
 ### Research Settings
 
 ```yaml
@@ -821,7 +826,9 @@ pipeline in a background thread; the status tools read
 report on runs started from the CLI. Register it in pi:
 
 ```bash
-pi mcp add researchclaw -- python -m researchclaw mcp --start -c config.arc.yaml
+pi mcp add researchclaw --cwd "$PWD" -- python -m researchclaw mcp --start -c config.arc.yaml
+pi mcp list      # researchclaw: connected, 6 tools
+pi mcp remove researchclaw
 ```
 
 Only stdio transport is implemented; stdout is the JSON-RPC stream (diagnostics

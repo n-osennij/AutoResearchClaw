@@ -8,6 +8,10 @@ research:
     - "machine-learning"
   daily_paper_count: 10
   quality_threshold: 4.0
+  # Earliest publication year Stage 4 will accept (default 2020). Set to 0 for
+  # no cutoff — needed for topics whose foundations are older (Transformer 2017,
+  # Adam 2014 ...). Applied by every literature source.
+  min_year: 2020
 
 runtime:
   timezone: "America/New_York"

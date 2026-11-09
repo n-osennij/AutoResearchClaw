@@ -282,8 +282,10 @@ pipeline run in a background thread; status/results are read from the run
 directory, so tools also work for runs started from the CLI.
 
 ```bash
-# register once, then use the tools from the agent
-pi mcp add researchclaw -- python -m researchclaw mcp --start -c config.arc.yaml
+# register once (cwd must be the repo so `python -m researchclaw` resolves)
+pi mcp add researchclaw --cwd "$PWD" -- python -m researchclaw mcp --start -c config.arc.yaml
+pi mcp list          # researchclaw: connected, 6 tools
+pi mcp remove researchclaw
 ```
 
 stdout carries the protocol — diagnostics go to stderr. Only the stdio transport
@@ -615,6 +617,7 @@ research:
   domains: ["ml", "nlp"]           # Research domains for literature search
   daily_paper_count: 8             # Target papers per search query
   quality_threshold: 4.0           # Minimum quality score for papers
+  min_year: 2020                   # Earliest publication year for Stage 4 (0 = no cutoff)
 
 # === Runtime ===
 runtime:
@@ -813,7 +816,9 @@ names are skipped). Keys go inline (`*_api_key`) or into the env var named by
 | `pubmed` | MEDLINE | `NCBI_API_KEY` optional — raises 3 → 10 req/s |
 | `core` | open-access full text | `CORE_API_KEY` **required** (free at <https://core.ac.uk/services/api>) |
 
-`pubmed_domain_gate: true` drops PubMed unless `research.domains` looks
+`research.min_year` (default 2020) is the publication-year floor every source
+applies; `0` disables it so classic pre-2020 work (Transformer, Adam, ResNet) is
+searchable again. `pubmed_domain_gate: true` drops PubMed unless `research.domains` looks
 biomedical — its word-level query translation floods an ML topic with
 irrelevant clinical hits. Open-access `pdf_url` links captured by any source
 are passed to the PDF extractor when `web_search.enable_pdf_extraction` is on
@@ -858,6 +863,15 @@ When `project.profile=hep_ph` and `experiment.mode=collider_agent`, the
 pipeline routes Stage 12 through ColliderAgent (Lagrangian → FeynRules →
 MadGraph5 → figures via Magnus cloud) instead of the default Python ML
 sandbox.
+
+### Skills installation (automatic)
+
+With `experiment.collider_agent.install_skills: true` (default) every Stage-12
+run copies `src/skills` and `src/agents` from `collider_agent_dir` into
+`~/.claude/{skills,agents}` **and** the workspace `.claude/` copy; skills are
+also installed to `~/.agents/skills` and `<workspace>/.agents/skills`, which is
+where pi and the ARC skill loader look. Nothing to do manually — the only
+prerequisite is a ColliderAgent checkout at `collider_agent_dir`.
 
 ### Mid-stage HITL
 

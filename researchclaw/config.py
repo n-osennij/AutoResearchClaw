@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import sys
+from datetime import datetime
+
 import yaml
 
 DEFAULT_PYTHON_PATH = (
@@ -143,6 +145,10 @@ class ResearchConfig:
     daily_paper_count: int = 0
     quality_threshold: float = 0.0
     graceful_degradation: bool = True
+    #: Earliest publication year the literature search accepts. 0 disables the
+    #: filter, which is what you want for topics whose foundations predate 2020
+    #: (Transformer 2017, Adam 2014 ...). Applied by every Stage-4 backend.
+    min_year: int = 2020
 
 
 @dataclass(frozen=True)
@@ -979,6 +985,7 @@ class RCConfig:
                 daily_paper_count=int(research.get("daily_paper_count", 0)),
                 quality_threshold=float(research.get("quality_threshold", 0.0)),
                 graceful_degradation=bool(research.get("graceful_degradation", True)),
+                min_year=int(research.get("min_year", 2020)),
             ),
             runtime=RuntimeConfig(
                 timezone=runtime["timezone"],
@@ -1162,6 +1169,19 @@ def validate_config(
                     errors.append(
                         f"Invalid security.hitl_required_stages entry: {stage}"
                     )
+
+    min_year = _get_by_path(data, "research.min_year")
+    if min_year is not None and not _is_blank(min_year):
+        try:
+            parsed_year = int(min_year)
+        except (TypeError, ValueError):
+            errors.append(f"Invalid research.min_year: {min_year}")
+        else:
+            if parsed_year < 0 or parsed_year > datetime.now().year + 1:
+                errors.append(
+                    "Invalid research.min_year: "
+                    f"{parsed_year} (use 0 for no cutoff)"
+                )
 
     exp_mode = _get_by_path(data, "experiment.mode")
     if not _is_blank(exp_mode) and exp_mode not in EXPERIMENT_MODES:

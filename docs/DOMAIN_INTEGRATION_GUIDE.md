@@ -460,7 +460,7 @@ class MyDomainAgentConfig:
     timeout_sec: int = 3600
     claude_binary: str = ""                        # auto-detect if empty
     extra_args: tuple[str, ...] = ("--dangerously-skip-permissions",)
-    install_skills: bool = True                    # copy skills → ~/.claude
+    install_skills: bool = True                    # copy skills → ~/.claude + ~/.agents
     max_turns: int = 100
     # Add cloud creds, GPU flags, etc. as needed
     incremental: bool = False

@@ -214,9 +214,13 @@ def _execute_search_strategy(
         encoding="utf-8",
     )
 
-    # F1.5: Extract queries from plan for Stage 4 real literature search
+    # F1.5: Extract queries from plan for Stage 4 real literature search.
+    # The publication-year floor comes from config, not from the model: the
+    # search-strategy prompt is not asked for a date range, so an LLM-chosen
+    # value was effectively random. ``research.min_year: 0`` disables the
+    # filter entirely (needed for pre-2020 foundations).
     queries_list: list[str] = []
-    year_min = 2020
+    year_min = config.research.min_year
     if isinstance(plan, dict):
         strategies = (
             plan.get("search_strategies")
@@ -243,12 +247,6 @@ def _execute_search_strategy(
         # Alternate schema: a flat top-level `queries` list.
         if not queries_list:
             _collect_queries(plan.get("queries"), queries_list)
-        filters = plan.get("filters", {})
-        if isinstance(filters, dict) and filters.get("min_year"):
-            try:
-                year_min = int(filters["min_year"])
-            except (ValueError, TypeError):
-                pass
 
     # --- Sanitize queries: shorten overly long queries ---
     # LLMs often produce the full topic title as a query, which is too long for
@@ -431,7 +429,7 @@ def _execute_literature_collect(
     queries_text = _read_prior_artifact(run_dir, "queries.json")
     queries_data = _safe_json_loads(queries_text or "{}", {})
     queries: list[str] = queries_data.get("queries", [topic])
-    year_min: int = queries_data.get("year_min", 2020)
+    year_min: int = queries_data.get("year_min", config.research.min_year)
 
     # --- Try real API search first ---
     candidates: list[dict[str, Any]] = []

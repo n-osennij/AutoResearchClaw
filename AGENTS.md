@@ -94,7 +94,8 @@ newline-delimited framing (MCP spec) and exposes six working tools. Register it
 in pi once:
 
 ```bash
-pi mcp add researchclaw -- python -m researchclaw mcp --start -c config.arc.yaml
+pi mcp add researchclaw --cwd "$PWD" -- python -m researchclaw mcp --start -c config.arc.yaml
+pi mcp list          # -> researchclaw: connected, 6 tools
 ```
 
 `run_pipeline` starts a background thread running the real pipeline,
