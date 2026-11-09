@@ -2146,3 +2146,56 @@ class TestVerifyDoiNormalisation:
         import urllib.parse
 
         assert "10.5555/3295222.3295349" in urllib.parse.unquote(seen[0])
+
+
+class TestAdvertisedKeyMatchesBibtex:
+    """Stage 4 advertises ``cite_key`` to the writer and writes references.bib.
+
+    If the two diverge (a suffixed key in the .bib, the bare one in
+    candidates.jsonl), the writer emits a citation for the bare key and the
+    runner strips it as a missing reference.
+    """
+
+    def test_colliding_papers_share_one_key_in_both_artifacts(self) -> None:
+        from researchclaw.literature.models import Paper
+        from researchclaw.literature.search import uniquify_bibtex_entry
+
+        papers = [
+            Paper(paper_id="1", title="Deep learning for X", authors=(), year=2024),
+            Paper(paper_id="2", title="Deep learning for Y", authors=(), year=2024),
+        ]
+        keys: dict[str, int] = {}
+        advertised: list[str] = []
+        entries: list[str] = []
+        for paper in papers:
+            row = paper.to_dict()
+            entry, unique_key = uniquify_bibtex_entry(paper.to_bibtex(), keys)
+            if unique_key:
+                row["cite_key"] = unique_key
+            advertised.append(row["cite_key"])
+            entries.append(entry)
+
+        emitted = [e.split("{", 1)[1].split(",", 1)[0] for e in entries]
+        assert emitted == advertised
+        assert len(set(emitted)) == 2
+
+
+class TestVerifyCacheIsolation:
+    def test_cache_key_includes_version_and_is_title_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+    ) -> None:
+        from pathlib import Path
+
+        from researchclaw.literature import verify as verify_mod
+
+        monkeypatch.setattr(verify_mod, "_CACHE_DIR", Path(str(tmp_path)))
+        assert verify_mod._cache_key("A Paper") == verify_mod._cache_key(" a paper ")
+        # Cheap guard: the key carries the version prefix, so bumping the
+        # version invalidates every stored verdict.
+        import hashlib
+
+        expected = hashlib.sha256(
+            f"{verify_mod._CACHE_VERSION}|a paper".encode()
+        ).hexdigest()[:16]
+        assert verify_mod._cache_key("A Paper") == expected
+

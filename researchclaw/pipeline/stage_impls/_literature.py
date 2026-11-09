@@ -507,7 +507,12 @@ def _execute_literature_collect(
 
     # --- Try real API search first ---
     candidates: list[dict[str, Any]] = []
+    from researchclaw.literature.search import uniquify_bibtex_entry
+
     bibtex_entries: list[str] = []
+    # Keys already emitted into references.bib, so a later entry (including the
+    # Scholar and fallback paths) cannot shadow an earlier one.
+    bibtex_keys: dict[str, int] = {}
     real_search_succeeded = False
     foundational_papers: list[Any] = []
     hybrid_enabled = False
@@ -720,8 +725,15 @@ def _execute_literature_collect(
                 else:
                     d["year_band"] = "all"
                 d["collected_at"] = _utcnow_iso()
+                # ``cite_key`` is derived from author/year/title, so two 2024
+                # Zhang papers can collide. Rename here and advertise the same
+                # key downstream: the writer stage cites ``[cite_key]`` and the
+                # bibliography must contain it verbatim.
+                entry, unique_key = uniquify_bibtex_entry(p.to_bibtex(), bibtex_keys)
+                if unique_key:
+                    d["cite_key"] = unique_key
                 candidates.append(d)
-                bibtex_entries.append(p.to_bibtex())
+                bibtex_entries.append(entry)
             src_str = ", ".join(f"{s}: {n}" for s, n in src_counts.items())
             logger.info(
                 "[literature] Found %d papers (%s)", len(papers), src_str
@@ -816,8 +828,13 @@ def _execute_literature_collect(
                     lit_paper = sp.to_literature_paper()
                     d = lit_paper.to_dict()
                     d["collected_at"] = _utcnow_iso()
+                    entry, unique_key = uniquify_bibtex_entry(
+                        lit_paper.to_bibtex(), bibtex_keys
+                    )
+                    if unique_key:
+                        d["cite_key"] = unique_key
                     candidates.append(d)
-                    bibtex_entries.append(lit_paper.to_bibtex())
+                    bibtex_entries.append(entry)
 
             # Save web search context for downstream stages
             web_context = web_result.to_context_string(max_length=20_000)
@@ -888,6 +905,10 @@ def _execute_literature_collect(
                     w[0] for w in str(c.get("title", "study")).split()[:3]
                 ).lower()
                 _ck = f"{_surname}{_yr}{_title_word}"
+            # Same key must be advertised downstream and written here.
+            _ck, _ = uniquify_bibtex_entry(f"@article{{{_ck}, x=1}}", bibtex_keys)
+            _ck = _ck.split("{", 1)[1].split(",", 1)[0]
+            c["cite_key"] = _ck
             _title = c.get("title", "Untitled")
             _year = c.get("year", 2024)
             _author_str = ""

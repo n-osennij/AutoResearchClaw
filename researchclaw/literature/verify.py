@@ -555,10 +555,17 @@ import hashlib
 from pathlib import Path
 
 _CACHE_DIR = Path.home() / ".cache" / "researchclaw" / "citation_verify"
+# Bump when the verdicts produced by any layer change meaning (e.g. the DOI
+# normalisation fix, which turned prefixed DOIs from HALLUCINATED into
+# VERIFIED). Old entries stay on disk but are never read again: a wrong
+# "hallucinated" verdict is cached by title and would delete the citation from
+# the bibliography on every later run.
+_CACHE_VERSION = "v2"
 
 
 def _cache_key(title: str) -> str:
-    return hashlib.sha256(title.lower().strip().encode()).hexdigest()[:16]
+    raw = f"{_CACHE_VERSION}|{title.lower().strip()}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def _read_cache(title: str) -> CitationResult | None:
@@ -861,8 +868,10 @@ def verify_citations(
             matched_paper=result.matched_paper,
         )
 
-        # Cache the result (skip SKIPPED — network failures shouldn't be cached)
-        if result.status != VerifyStatus.SKIPPED:
+        # Cache the result. SKIPPED (network failure) is never cached, and a
+        # HALLUCINATED verdict is re-checked on the next run: a 404 caused by a
+        # DOI formatting quirk must not outlive the fix that corrected it.
+        if result.status not in (VerifyStatus.SKIPPED, VerifyStatus.HALLUCINATED):
             _write_cache(title, result)
 
         if result.status == VerifyStatus.VERIFIED:

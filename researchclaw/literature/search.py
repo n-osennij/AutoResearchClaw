@@ -616,47 +616,59 @@ def _suffix(n: int) -> str:
     return letters
 
 
+def uniquify_bibtex_entry(
+    entry: str, seen: dict[str, int]
+) -> tuple[str, str]:
+    """Give one rendered entry a key nobody used yet; return (entry, key).
+
+    ``seen`` maps an already-used key to how many times it occurred. The key is
+    read back from the entry text, so a cached ``_bibtex_override`` that carries
+    its own key is handled too. Callers that also advertise ``cite_key`` to the
+    LLM (stage 4 writes both ``candidates.jsonl`` and ``references.bib``) must
+    store the returned key, otherwise the advertised key and the key written in
+    the bibliography diverge and the citation is dropped as missing.
+    """
+    match = _KEY_RE.match(entry)
+    key = match.group(2).strip() if match else ""
+    if not key:
+        return entry, ""  # unparseable: keep it, cannot rename safely
+    count = seen.get(key, 0)
+    seen[key] = count + 1
+    if not count:
+        return entry, key
+    # Skip candidates that collide with a key already in use: a key made of the
+    # suffix letter itself ("aaaa…") truncates to the same string, so a blind
+    # rename would emit the duplicate again.
+    attempt = count
+    while attempt < count + 1000:
+        suffix = _suffix(attempt - 1)
+        new_key = key[: max(1, 40 - len(suffix))] + suffix
+        if new_key != key and new_key not in seen:
+            break
+        attempt += 1
+    else:  # pragma: no cover - 1000 consecutive collisions
+        return entry, key
+    seen[new_key] = 1
+    renamed = (
+        entry[: match.start()]
+        + match.group(1)
+        + new_key
+        + match.group(3)
+        + entry[match.end() :]
+    )
+    return renamed, new_key
+
+
 def dedupe_bibtex_entries(entries: Sequence[str]) -> list[str]:
     """Rename duplicate cite keys in already-rendered BibTeX entries.
 
     Operates on the emitted text, not on ``Paper.cite_key``: a cached
     ``_bibtex_override`` carries its own key, so bookkeeping keyed on
     ``cite_key`` would miss the clash and ship two entries BibTeX resolves to
-    one. The key read back from the entry is what gets counted and renamed.
+    one.
     """
     seen: dict[str, int] = {}
-    out: list[str] = []
-    for entry in entries:
-        match = _KEY_RE.match(entry)
-        key = match.group(2).strip() if match else ""
-        if not key:
-            out.append(entry)  # unparseable: keep it, cannot rename safely
-            continue
-        count = seen.get(key, 0)
-        seen[key] = count + 1
-        if count:
-            # Skip candidates that collide with a key already in use: a key
-            # made of the suffix letter itself ("aaaa…") truncates to the same
-            # string, so a blind rename would emit the duplicate again.
-            attempt = count
-            while attempt < count + 1000:
-                suffix = _suffix(attempt - 1)
-                new_key = key[: max(1, 40 - len(suffix))] + suffix
-                if new_key != key and new_key not in seen:
-                    break
-                attempt += 1
-            else:  # pragma: no cover - 1000 consecutive collisions
-                new_key = key
-            entry = (
-                entry[: match.start()]
-                + match.group(1)
-                + new_key
-                + match.group(3)
-                + entry[match.end() :]
-            )
-            seen[new_key] = seen.get(new_key, 0) + 1
-        out.append(entry)
-    return out
+    return [uniquify_bibtex_entry(entry, seen)[0] for entry in entries]
 
 
 def papers_to_bibtex(papers: Sequence[Paper]) -> str:
