@@ -117,7 +117,7 @@ artifacts/<run>/
 ├── stage-04/search_meta.json          # per-source counts, cache hits
 ├── stage-05/screen_meta.json          # candidates screened, shortlist size
 ├── stage-05/shortlist.jsonl           # papers kept for extraction
-├── stage-06/cards/                    # 6 knowledge cards
+├── stage-06/cards/                    # knowledge cards (one per shortlisted paper)
 ├── stage-12/runs/…                    # generated code + per-run results.json
 ├── stage-12/experiment_history.json   # metric trajectory
 ├── stage-13/experiment_final/         # refined code + final results
@@ -146,9 +146,14 @@ to cite.
   at 100 000 chars — the model does not see every candidate on huge runs.
 - **Shortlist:** the target is 15 papers (backfilled from the prefiltered set if
   the model returns fewer; an empty model verdict pauses the stage).
-- **Knowledge cards:** Stage 6 writes 6 cards.
+- **Knowledge cards:** Stage 6 asks for one card per shortlisted paper; the
+  template fallback (used when the model returns nothing) takes 6.
 - **Year:** `research.min_year`, default 2020 (see above). Only 31 curated
   classics (`researchclaw/data/seminal_papers.yaml`) are injected regardless.
+  The literature cache key is `(query, source, limit)` — **`min_year` is not
+  part of it**, so after lowering the cutoff old cached hits can still come
+  back until the entry expires (24 h arXiv, 3 days OpenAlex/S2, 7 days the
+  rest). Delete `.researchclaw_cache/literature/` to force fresh searches.
 - **Web layer:** 10 web results, 10 scholar results, 5 crawled pages, up to 5
   PDFs per run.
 
