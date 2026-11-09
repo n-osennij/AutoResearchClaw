@@ -156,10 +156,11 @@ literature_search:
   # Stage 4 can collect 600-900 unique papers; they are NOT all sent to the
   # screener. The blob is capped at max_screen_chars, and every abstract is cut
   # to max_abstract_chars first. Measured size of one candidate line (JSON,
-  # authors already stripped by stage 5):
-  #     abstract  800 chars -> ~1340 chars/paper
-  #     abstract 1200 chars -> ~1740 chars/paper
-  #     abstract 1500 chars -> ~2040 chars/paper
+  # authors stripped by stage 5, MeSH cut to 5 tags):
+  #     abstract  800 chars -> ~1340 chars/paper (~1440 for a MEDLINE row:
+  #                           pmid, publication types and MeSH tags ride along)
+  #     abstract 1200 chars -> ~1740 chars/paper (~1840 for a MEDLINE row)
+  #     abstract 1500 chars -> ~2040 chars/paper (~2140 for a MEDLINE row)
   # Capacity is therefore approx max_screen_chars / line size, and tokens are
   # approx chars / 4:
   #     100 000 chars -> ~74 papers  (~25k tokens)
