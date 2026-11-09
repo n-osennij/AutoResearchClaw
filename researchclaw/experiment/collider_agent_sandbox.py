@@ -40,6 +40,23 @@ from researchclaw.experiment.cli_flags import agent_cli_flags
 
 logger = logging.getLogger(__name__)
 
+
+def _merge_copy(src_dir: Path, dst_dir: Path) -> None:
+    """Copy each child of *src_dir* into *dst_dir*, replacing same-name items."""
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for item in src_dir.iterdir():
+        item_dst = dst_dir / item.name
+        if item_dst.exists():
+            if item_dst.is_dir():
+                shutil.rmtree(item_dst)
+            else:
+                item_dst.unlink()
+        if item.is_dir():
+            shutil.copytree(item, item_dst)
+        else:
+            shutil.copy2(item, item_dst)
+
+
 # Sentinel written to the prompt file name
 _PROMPT_FILENAME = "collider_plan.md"
 
@@ -610,45 +627,28 @@ class ColliderAgentSandbox:
         skills_src = ca_dir / "src" / "skills"
         agents_src = ca_dir / "src" / "agents"
 
-        # --- Global installation to ~/.claude/ (matches ColliderAgent README) ---
-        global_claude = Path.home() / ".claude"
-        global_claude.mkdir(exist_ok=True)
-
-        targets = [
-            (skills_src, global_claude / "skills"),
-            (agents_src, global_claude / "agents"),
+        # --- Global installation: Claude Code (~/.claude) and pi (~/.agents) ---
+        # Merge rather than replace the whole tree so user skills survive.
+        global_targets = [
+            (skills_src, Path.home() / ".claude" / "skills"),
+            (agents_src, Path.home() / ".claude" / "agents"),
+            # Agent Skills location read by pi (and the ARC skill loader).
+            (skills_src, Path.home() / ".agents" / "skills"),
         ]
-
-        for src, dst in targets:
+        for src, dst in global_targets:
             if not src.exists():
                 logger.warning(
                     "ColliderAgentSandbox: %s not found — skills may be missing", src
                 )
                 continue
-            dst.mkdir(parents=True, exist_ok=True)
-            # Merge: copy individual skill dirs rather than overwriting the whole tree
-            # This avoids clobbering other skills the user may have installed
-            for item in src.iterdir():
-                item_dst = dst / item.name
-                if item_dst.exists():
-                    if item_dst.is_dir():
-                        shutil.rmtree(item_dst)
-                    else:
-                        item_dst.unlink()
-                if item.is_dir():
-                    shutil.copytree(item, item_dst)
-                else:
-                    shutil.copy2(item, item_dst)
-            logger.info(
-                "ColliderAgentSandbox: installed %s → %s (global)", src, dst
-            )
+            _merge_copy(src, dst)
+            logger.info("ColliderAgentSandbox: installed %s → %s (global)", src, dst)
 
-        # --- Project-scoped copy in workspace/.claude/ (takes priority in CWD) ---
-        dot_claude = workspace / ".claude"
-        dot_claude.mkdir(exist_ok=True)
+        # --- Project-scoped copy (takes priority when the CLI runs in CWD) ---
         for src, dst in [
-            (skills_src, dot_claude / "skills"),
-            (agents_src, dot_claude / "agents"),
+            (skills_src, workspace / ".claude" / "skills"),
+            (agents_src, workspace / ".claude" / "agents"),
+            (skills_src, workspace / ".agents" / "skills"),
         ]:
             if not src.exists():
                 continue
