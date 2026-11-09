@@ -59,6 +59,15 @@ def _find_acpx() -> str | None:
     return None
 
 
+def find_acpx() -> str | None:
+    """Locate the ``acpx`` launcher (PATH, then a bundled OpenClaw install).
+
+    Public wrapper so ``researchclaw doctor`` reports the same lookup the ACP
+    client uses at runtime — the agent binary alone is not enough.
+    """
+    return _find_acpx()
+
+
 class ACPClient:
     """LLM client that uses acpx to communicate with ACP agents.
 

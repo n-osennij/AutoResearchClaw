@@ -717,6 +717,26 @@ def check_acp_agent(agent_command: str) -> CheckResult:
     )
 
 
+def check_acpx() -> CheckResult:
+    """Check that the ACP launcher (``acpx``) is installed.
+
+    :func:`check_acp_agent` only proves the agent binary exists; the ACP client
+    shells out through ``acpx``, so a missing launcher would fail at the first
+    stage instead of at startup.
+    """
+    from researchclaw.llm.acp_client import find_acpx
+
+    resolved = find_acpx()
+    if resolved:
+        return CheckResult(name="acpx", status="pass", detail=f"acpx found: {resolved}")
+    return CheckResult(
+        name="acpx",
+        status="fail",
+        detail="acpx not found on PATH",
+        fix="Install it: npm install -g acpx",
+    )
+
+
 def check_docker_runtime(config: RCConfig) -> CheckResult:
     """Check Docker daemon, image availability, and optional NVIDIA runtime."""
     from researchclaw.experiment.docker_sandbox import DockerSandbox
@@ -785,6 +805,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
 
     if provider == "acp":
         checks.append(check_acp_agent(acp_agent_command))
+        checks.append(check_acpx())
     else:
         checks.append(check_llm_connectivity(base_url, api_key, extra_headers))
         checks.append(check_api_key_valid(base_url, api_key, extra_headers))

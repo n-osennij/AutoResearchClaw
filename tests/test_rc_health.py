@@ -609,6 +609,22 @@ def test_check_acp_agent_missing() -> None:
     assert "Install claude" in result.fix
 
 
+def test_check_acpx_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "researchclaw.llm.acp_client.find_acpx", lambda: "/usr/local/bin/acpx"
+    )
+    result = health.check_acpx()
+    assert result.status == "pass"
+    assert "/usr/local/bin/acpx" in result.detail
+
+
+def test_check_acpx_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("researchclaw.llm.acp_client.find_acpx", lambda: None)
+    result = health.check_acpx()
+    assert result.status == "fail"
+    assert "npm install -g acpx" in result.fix
+
+
 def _write_acp_config(path: Path) -> None:
     _ = path.write_text(
         """\
@@ -652,6 +668,10 @@ def test_run_doctor_acp_skips_http_checks(tmp_path: Path) -> None:
             return_value=health.CheckResult("acp_agent", "pass", "ok"),
         ),
         patch.object(
+            health, "check_acpx",
+            return_value=health.CheckResult("acpx", "pass", "ok"),
+        ),
+        patch.object(
             health, "check_sandbox_python",
             return_value=health.CheckResult("sandbox_python", "pass", "ok"),
         ),
@@ -693,6 +713,10 @@ def test_run_doctor_acp_includes_agent_check(tmp_path: Path) -> None:
             return_value=health.CheckResult("acp_agent", "pass", "ok"),
         ),
         patch.object(
+            health, "check_acpx",
+            return_value=health.CheckResult("acpx", "pass", "ok"),
+        ),
+        patch.object(
             health, "check_sandbox_python",
             return_value=health.CheckResult("sandbox_python", "pass", "ok"),
         ),
@@ -710,7 +734,7 @@ def test_run_doctor_acp_includes_agent_check(tmp_path: Path) -> None:
     check_names = [c.name for c in report.checks]
     assert "acp_agent" in check_names
     assert report.overall == "pass"
-    assert len(report.checks) == 7
+    assert len(report.checks) == 8
 
 
 def test_print_doctor_report_ascii_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
