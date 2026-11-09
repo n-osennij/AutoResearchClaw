@@ -475,6 +475,15 @@ def _execute_literature_collect(
             len(queries),
             " -> ".join(sources),
         )
+        if year_min > 0:
+            logger.warning(
+                "[literature] YEAR FILTER ACTIVE: research.min_year=%d — "
+                "papers published before %d are excluded by every source "
+                "(pre-2020 foundations such as Transformer 2017 / Adam 2014 "
+                "will not be found). Set research.min_year: 0 to include them.",
+                year_min,
+                year_min,
+            )
         papers = search_papers_multi_query(
             expanded_queries,
             limit_per_query=literature_config.max_results_per_query,
@@ -710,6 +719,16 @@ def _execute_literature_collect(
                 "real_search": real_search_succeeded,
                 "queries_used": queries,
                 "year_min": year_min,
+                "year_filter": {
+                    "min_year": year_min,
+                    "active": year_min > 0,
+                    "hint": (
+                        f"papers published before {year_min} are excluded by "
+                        "every source; set research.min_year: 0 to include them"
+                        if year_min > 0
+                        else "no publication-year cutoff"
+                    ),
+                },
                 "total_candidates": len(candidates),
                 "bibtex_entries": len(bibtex_entries),
                 "ts": _utcnow_iso(),
@@ -728,8 +747,9 @@ def _execute_literature_collect(
     )
 
 
-_MAX_ABSTRACT_LEN = 800  # Truncate long abstracts to reduce token usage
-_MAX_CANDIDATES_CHARS = 100_000  # Cap total candidates text sent to LLM
+# Screening budget defaults live in LiteratureSearchConfig
+# (``max_abstract_chars`` / ``max_screen_chars`` / ``min_shortlist``); they are
+# read below so a large-context model can be fed hundreds of candidates.
 
 
 def _execute_literature_screen(
@@ -742,6 +762,7 @@ def _execute_literature_screen(
     prompts: PromptManager | None = None,
 ) -> StageResult:
     candidates_text = _read_prior_artifact(run_dir, "candidates.jsonl") or ""
+    screening = config.literature_search
 
     # --- P1-1: keyword relevance pre-filter ---
     # Before LLM screening, drop papers whose title+abstract share no keywords
@@ -773,15 +794,18 @@ def _execute_literature_screen(
     # Sort by keyword overlap (descending) before the char cap below drops
     # anything — candidates arrive in raw search order (whichever query/
     # source happened to return them), not relevance order. Without this,
-    # the _MAX_CANDIDATES_CHARS truncation can silently drop every relevant
+    # the max_screen_chars truncation can silently drop every relevant
     # paper while keeping only whatever off-topic results came first, and
     # the LLM correctly (but uselessly) rejects the truncated set it saw.
     filtered_rows.sort(key=lambda r: r.get("keyword_overlap", 0), reverse=True)
     # Truncate abstracts and strip authors to reduce token usage
     for row in filtered_rows:
         abstract = row.get("abstract", "")
-        if isinstance(abstract, str) and len(abstract) > _MAX_ABSTRACT_LEN:
-            row["abstract"] = abstract[:_MAX_ABSTRACT_LEN] + "..."
+        if (
+            isinstance(abstract, str)
+            and len(abstract) > screening.max_abstract_chars
+        ):
+            row["abstract"] = abstract[: screening.max_abstract_chars] + "..."
         # Strip authors list — not needed for screening and inflates tokens
         row.pop("authors", None)
 
@@ -790,9 +814,9 @@ def _execute_literature_screen(
         json.dumps(r, ensure_ascii=False) for r in filtered_rows
     )
     # Cap total candidates text size to avoid blowing token budget
-    if len(candidates_text) > _MAX_CANDIDATES_CHARS:
+    if len(candidates_text) > screening.max_screen_chars:
         # Truncate at newline boundary to avoid cutting mid-JSON-line
-        candidates_text = candidates_text[:_MAX_CANDIDATES_CHARS].rsplit("\n", 1)[0]
+        candidates_text = candidates_text[: screening.max_screen_chars].rsplit("\n", 1)[0]
         logger.info(
             "Candidates text truncated to %d chars for screening",
             len(candidates_text),
@@ -840,8 +864,8 @@ def _execute_literature_screen(
                     parse_failed = True
         else:
             parse_failed = True
-    # T2.2: Ensure minimum shortlist size of 15 for adequate related work
-    _MIN_SHORTLIST = 15
+    # Ensure a usable shortlist size for adequate related work (configurable)
+    _MIN_SHORTLIST = screening.min_shortlist
     if model_rejected_all:
         # Strict screen returned an empty shortlist — do not backfill with
         # rejected papers. Pause the pipeline so the user can decide whether

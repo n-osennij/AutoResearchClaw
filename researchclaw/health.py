@@ -717,6 +717,25 @@ def check_acp_agent(agent_command: str) -> CheckResult:
     )
 
 
+def check_min_year(min_year: int) -> CheckResult:
+    """Remind that Stage 4 silently drops papers older than ``min_year``."""
+    if min_year <= 0:
+        return CheckResult(
+            name="min_year",
+            status="pass",
+            detail="No publication-year cutoff (research.min_year: 0)",
+        )
+    return CheckResult(
+        name="min_year",
+        status="warn",
+        detail=(
+            f"Literature search excludes papers published before {min_year} "
+            f"(research.min_year: {min_year}) — old foundations will not be found"
+        ),
+        fix="Set research.min_year: 0 to include older work",
+    )
+
+
 def check_acpx() -> CheckResult:
     """Check that the ACP launcher (``acpx``) is installed.
 
@@ -783,6 +802,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
     provider = ""
     acp_agent_command = "claude"
     extra_headers: dict[str, str] = {}
+    min_year = 2020
 
     try:
         config = RCConfig.load(path, check_paths=False)
@@ -794,6 +814,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
         sandbox_python_path = config.experiment.sandbox.python_path
         experiment_mode = config.experiment.mode
         acp_agent_command = config.llm.acp.agent
+        min_year = config.research.min_year
         # Gateway routing headers. Some gateways need a per-conversation
         # session id and reject a placeholder, so resolve "auto" exactly the
         # way LLMClient does.
@@ -814,6 +835,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
                 base_url, api_key, model, fallback_models, extra_headers
             )
         )
+    checks.append(check_min_year(min_year))
     checks.append(check_sandbox_python(sandbox_python_path))
     checks.append(check_matplotlib())
     checks.append(check_experiment_mode(experiment_mode))

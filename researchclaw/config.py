@@ -247,6 +247,13 @@ class LiteratureSearchConfig:
     sources: tuple[str, ...] = ("openalex", "semantic_scholar", "arxiv")
     max_results_per_query: int = 40
     inter_query_delay_sec: float = 1.5
+    # Stage-5 screening budget. The candidate blob sent to the LLM is capped at
+    # ``max_screen_chars`` (abstracts are cut to ``max_abstract_chars`` first),
+    # so a 1M-token model can be given far more papers at once.
+    max_screen_chars: int = 100_000
+    max_abstract_chars: int = 800
+    # Target size of the screened shortlist; fewer results are backfilled.
+    min_shortlist: int = 15
     openalex_email: str = "researchclaw@users.noreply.github.com"
     openalex_api_key: str = ""
     openalex_api_key_env: str = "OPENALEX_API_KEY"
@@ -1278,6 +1285,27 @@ def _parse_literature_search_config(data: dict[str, Any]) -> LiteratureSearchCon
             _safe_float(
                 data.get("inter_query_delay_sec"),
                 LiteratureSearchConfig.inter_query_delay_sec,
+            ),
+        ),
+        max_screen_chars=max(
+            10_000,
+            _safe_int(
+                data.get("max_screen_chars"),
+                LiteratureSearchConfig.max_screen_chars,
+            ),
+        ),
+        max_abstract_chars=max(
+            100,
+            _safe_int(
+                data.get("max_abstract_chars"),
+                LiteratureSearchConfig.max_abstract_chars,
+            ),
+        ),
+        min_shortlist=max(
+            1,
+            _safe_int(
+                data.get("min_shortlist"),
+                LiteratureSearchConfig.min_shortlist,
             ),
         ),
         openalex_email=str(

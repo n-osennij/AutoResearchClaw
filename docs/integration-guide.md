@@ -198,7 +198,9 @@ pacing (1 req/s for S2 and OpenReview) is built in.
 `research.min_year` (default 2020) is the publication-year floor applied by every
 source; set it to `0` for topics whose foundations predate 2020. Screening then
 keeps the best ~15 papers and Stage 6 turns the shortlist into knowledge cards
-(one per paper; the template fallback uses 6) — see the "Limits" note in
+(one per paper; the template fallback uses 6). The screening budget itself is
+configurable: `literature_search.max_screen_chars` (100 000 by default),
+`max_abstract_chars` (800) and `min_shortlist` (15) — see the "Limits" note in
 `.agents/skills/researchclaw/SKILL.md`.
 
 ### Research Settings

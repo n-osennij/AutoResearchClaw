@@ -129,6 +129,16 @@ literature_search:
   # Pause between expanded queries. Per-source pauses (S2/OpenReview 1 req/s,
   # the rest faster) are built into researchclaw/literature/search.py.
   inter_query_delay_sec: 1.5
+  # Stage-5 screening budget. The candidate blob sent to the screener is capped
+  # at max_screen_chars, with abstracts cut to max_abstract_chars first.
+  # 100_000 chars ≈ 25-30k tokens. With a 1M-token model 250_000-400_000 is a
+  # sane ceiling (~60-110k tokens): larger prompts cost more and screening
+  # precision drops once hundreds of papers are in one call.
+  max_screen_chars: 100000
+  max_abstract_chars: 800
+  # Target shortlist size; a smaller model verdict is backfilled from the
+  # keyword-prefiltered set.
+  min_shortlist: 15
   openalex_email: "researchclaw@users.noreply.github.com"
   openalex_api_key_env: "OPENALEX_API_KEY"
   openalex_api_key: ""

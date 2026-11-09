@@ -449,6 +449,11 @@ def test_run_doctor_all_pass_openai(tmp_path: Path) -> None:
         ),
         patch.object(
             health,
+            "check_min_year",
+            return_value=health.CheckResult("min_year", "pass", "ok"),
+        ),
+        patch.object(
+            health,
             "check_sandbox_python",
             return_value=health.CheckResult("sandbox_python", "pass", "ok"),
         ),
@@ -465,7 +470,7 @@ def test_run_doctor_all_pass_openai(tmp_path: Path) -> None:
     ):
         report = health.run_doctor(config_path)
     assert report.overall == "pass"
-    assert len(report.checks) == 9
+    assert len(report.checks) == 10
 
 
 def test_run_doctor_with_failures(tmp_path: Path) -> None:
@@ -618,6 +623,19 @@ def test_check_acpx_found(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "/usr/local/bin/acpx" in result.detail
 
 
+def test_check_min_year_warns_for_active_cutoff() -> None:
+    result = health.check_min_year(2020)
+    assert result.status == "warn"
+    assert "before 2020" in result.detail
+    assert "research.min_year: 0" in result.fix
+
+
+def test_check_min_year_passes_when_disabled() -> None:
+    result = health.check_min_year(0)
+    assert result.status == "pass"
+    assert "No publication-year cutoff" in result.detail
+
+
 def test_check_acpx_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("researchclaw.llm.acp_client.find_acpx", lambda: None)
     result = health.check_acpx()
@@ -672,6 +690,10 @@ def test_run_doctor_acp_skips_http_checks(tmp_path: Path) -> None:
             return_value=health.CheckResult("acpx", "pass", "ok"),
         ),
         patch.object(
+            health, "check_min_year",
+            return_value=health.CheckResult("min_year", "pass", "ok"),
+        ),
+        patch.object(
             health, "check_sandbox_python",
             return_value=health.CheckResult("sandbox_python", "pass", "ok"),
         ),
@@ -717,6 +739,10 @@ def test_run_doctor_acp_includes_agent_check(tmp_path: Path) -> None:
             return_value=health.CheckResult("acpx", "pass", "ok"),
         ),
         patch.object(
+            health, "check_min_year",
+            return_value=health.CheckResult("min_year", "pass", "ok"),
+        ),
+        patch.object(
             health, "check_sandbox_python",
             return_value=health.CheckResult("sandbox_python", "pass", "ok"),
         ),
@@ -734,7 +760,7 @@ def test_run_doctor_acp_includes_agent_check(tmp_path: Path) -> None:
     check_names = [c.name for c in report.checks]
     assert "acp_agent" in check_names
     assert report.overall == "pass"
-    assert len(report.checks) == 8
+    assert len(report.checks) == 9
 
 
 def test_print_doctor_report_ascii_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
