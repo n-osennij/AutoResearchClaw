@@ -71,7 +71,7 @@
 ## 🔥 News
 - **[05/19/2026]** **v0.5.0** — **Agents d'experience multi-domaines + ARC-Bench** — Deux mises a jour majeures. **(1) Agents d'execution specialises par domaine :** l'etape d'experience (etapes 10 a 13) ne se limite plus au bac a sable ML par defaut et s'oriente vers des agents specialises selon le domaine — **physique des hautes energies** (ColliderAgent : FeynRules → MadGraph5 → Delphes via le cloud Magnus), **biologie** (modelisation metabolique a l'echelle du genome avec COBRApy) et **statistiques** (agent d'etudes de simulation), avec un executeur Docker generique pour la chimie/les materiaux. Le pipeline selectionne automatiquement le bon executeur selon le domaine. **(2) ARC-Bench :** un benchmark de recherche autonome ouvert de **55 sujets** couvrant **ML (25), physique des hautes energies (10), quantique (10), biologie (7) et statistiques (3)**, chacun fourni avec un manifeste et une grille de notation (`experiments/arc_bench/`, et aussi sur [🤗 Hugging Face](https://huggingface.co/datasets/AIMING-Lab-UNC/ARC-Bench)). **[→ Guide d'integration des domaines](DOMAIN_INTEGRATION_GUIDE.md)**
 - **[04/01/2026]** **v0.4.0** — **Systeme Co-Pilote Human-in-the-Loop** — AutoResearchClaw n'est plus purement autonome. Le nouveau systeme HITL ajoute 6 modes d'intervention (`full-auto`, `gate-only`, `checkpoint`, `step-by-step`, `co-pilot`, `custom`), des politiques par etape, et une collaboration profonde humain-IA. Inclut : Atelier d'Idees pour la co-creation d'hypotheses, Navigateur de References pour la revue de conception experimentale, Co-Redacteur d'Article pour la redaction collaborative, SmartPause (intervention dynamique guidee par la confiance), apprentissage d'intervention ALHF, verification anti-hallucination des affirmations, garde-fous de budget, ramification du pipeline pour l'exploration parallele d'hypotheses, et commandes CLI (`attach`/`status`/`approve`/`reject`/`guide`). **[→ Guide HITL complet](HITL_GUIDE.md)**
-- **[03/30/2026]** **Chargement flexible de competences** — AutoResearchClaw supporte desormais le chargement de competences open-source et personnalisees depuis n'importe quelle discipline pour enrichir votre experience de recherche. 20 competences pre-chargees sont incluses comme references pretes a l'emploi, couvrant la redaction scientifique, la conception experimentale, la chimie, la biologie, et plus encore — incluant une competence d'evolution agentique [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) contribuee par la communaute. Chargez les votres via `researchclaw skills install` ou deposez un `SKILL.md` dans `.claude/skills/`. Voir [Bibliotheque de competences](#-bibliotheque-de-competences).
+- **[03/30/2026]** **Chargement flexible de competences** — AutoResearchClaw supporte desormais le chargement de competences open-source et personnalisees depuis n'importe quelle discipline pour enrichir votre experience de recherche. 20 competences pre-chargees sont incluses comme references pretes a l'emploi, couvrant la redaction scientifique, la conception experimentale, la chimie, la biologie, et plus encore — incluant une competence d'evolution agentique [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) contribuee par la communaute. Chargez les votres via `researchclaw skills install` ou deposez un `SKILL.md` dans `.agents/skills/`. Voir [Bibliotheque de competences](#-bibliotheque-de-competences).
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **Support multiplateforme + stabilite majeure** — AutoResearchClaw fonctionne desormais avec tout agent compatible ACP (Claude Code, Codex CLI, Copilot CLI, Gemini CLI, Kimi CLI) et supporte les plateformes de messagerie (Discord, Telegram, Lark, WeChat) via le pont OpenClaw. Nouveau backend de generation de code CLI-agent qui delegue les Stages 10 et 13 a des agents CLI externes avec controle de budget et gestion des timeouts. Inclut le systeme anti-fabrication (VerifiedRegistry + boucle diagnostic/reparation), 100+ corrections de bugs, refactoring modulaire de l'executor, auto-detection `--resume`, renforcement des retries LLM, et corrections communautaires.
 
 <details>
@@ -275,7 +275,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 | **API Python** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | Lit `RESEARCHCLAW_CLAUDE.md` — dites simplement *"Run research on [sujet]"* |
 | **Copilot CLI** | `researchclaw run --topic "..."` avec `llm.acp.agent: "gh"` |
-| **OpenCode** | Lit `.claude/skills/` — meme interface en langage naturel |
+| **OpenCode** | Lit `.agents/skills/` — meme interface en langage naturel |
 | **Tout CLI IA** | Fournissez `RESEARCHCLAW_AGENTS.md` comme contexte → l'agent s'auto-initialise |
 
 ---
@@ -552,7 +552,7 @@ AutoResearchClaw supporte desormais le chargement de **competences open-source e
 researchclaw skills install /path/to/my-skill/
 
 # Option 2 : Deposer un SKILL.md dans le projet
-mkdir -p .claude/skills/my-custom-skill
+mkdir -p .agents/skills/my-custom-skill
 # Puis creer un SKILL.md avec frontmatter YAML (name, description, trigger-keywords, applicable-stages)
 
 # Option 3 : Configurer des repertoires de competences partages dans config.arc.yaml

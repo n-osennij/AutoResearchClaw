@@ -36,14 +36,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Skills directories to scan (project-level .claude/skills/ and repo root)
+# Skills directories to scan (project-level, in priority order)
 _PROJECT_SKILLS_DIRS: tuple[str, ...] = (
+    ".agents/skills",
     ".claude/skills",
 )
 
 
 def _load_project_skills() -> list[str]:
-    """Load skill content from project-level ``.claude/skills/`` directories.
+    """Load skill content from project-level ``.agents/skills/`` directories.
 
     Scans for SKILL.md files in subdirectories (excluding the main
     ``researchclaw`` skill which is a CLI usage guide, not a pipeline skill).
@@ -51,7 +52,7 @@ def _load_project_skills() -> list[str]:
     ``metadata`` frontmatter or ``arc-`` / ``a-evolve`` in the name).
     """
     skills: list[str] = []
-    # Walk up from this file to find project root (contains .claude/)
+    # Walk up from this file to find project root (contains .agents/skills/)
     root = Path(__file__).resolve().parent.parent
     for rel_dir in _PROJECT_SKILLS_DIRS:
         skills_dir = root / rel_dir

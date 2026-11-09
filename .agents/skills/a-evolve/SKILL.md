@@ -149,7 +149,7 @@ For AutoResearchClaw projects, recommended locations:
 
 | Artifact | Location |
 |----------|----------|
-| Evolved skill | `.claude/skills/evolved/<skill-name>/SKILL.md` |
+| Evolved skill | `.agents/skills/evolved/<skill-name>/SKILL.md` |
 | Prompt patch | Append to `prompts.default.yaml` or custom prompts file |
 | Knowledge entry | `docs/kb/evolved_knowledge/<id>.json` |
 | Observation log | `evolution/observations/<batch>.md` |
@@ -178,7 +178,7 @@ When the user says "evolve my research pipeline" or similar:
 1. Ask which run to analyze (or find the latest `artifacts/rc-*/`)
 2. Run the Observe step on experiment outputs + review feedback
 3. Propose mutations targeting the weakest pipeline stages
-4. Generate skill files that ARC can load via `.claude/skills/`
+4. Generate skill files that ARC can load via `.agents/skills/`
 
 ## Anti-Patterns
 

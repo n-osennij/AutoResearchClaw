@@ -761,9 +761,9 @@ AutoResearchClaw works with any AI coding assistant that can read project contex
 
 ### Claude Code
 
-Claude Code automatically reads `RESEARCHCLAW_CLAUDE.md` (if present) when you open the project. It also loads the skill definition from `.claude/skills/researchclaw/SKILL.md`.
+Claude Code automatically reads `RESEARCHCLAW_CLAUDE.md` (if present) when you open the project. It also loads the skill definition from `.agents/skills/researchclaw/SKILL.md`.
 
-> **Note:** `RESEARCHCLAW_CLAUDE.md` is generated locally and listed in `.gitignore`. The `.claude/skills/researchclaw/SKILL.md` file is always available in the repo.
+> **Note:** `RESEARCHCLAW_CLAUDE.md` is generated locally and listed in `.gitignore`. The `.agents/skills/researchclaw/SKILL.md` file is always available in the repo.
 
 ```
 You: Research the impact of attention mechanisms on speech recognition
@@ -776,7 +776,7 @@ pi works in two independent roles.
 
 **As the driving agent (recommended).** pi auto-loads `AGENTS.md` from the repo
 root, so opening the project is enough: ask it to run the pipeline, inspect
-stage artifacts, or fix a failed stage. `.claude/skills/` is the *pipeline's*
+stage artifacts, or fix a failed stage. `.agents/skills/` is the *pipeline's*
 skill library, not pi's — pi's own skills live in `~/.agents/skills/` and
 `.agents/skills/`.
 
@@ -806,6 +806,27 @@ ignored, and one long session carries all 23 stages — expect pi's own
 compaction to kick in. For real workload the better split is pi supervising
 and the pipeline generating with its own API models.
 
+### MCP clients (pi, Claude, any MCP host)
+
+The pipeline can also be driven as an MCP tool server:
+
+```bash
+python -m researchclaw mcp --start -c config.arc.yaml     # stdio, newline JSON
+```
+
+Tools: `run_pipeline`, `get_pipeline_status`, `get_experiment_results`,
+`search_literature`, `review_paper`, `get_paper`. `run_pipeline` runs the full
+pipeline in a background thread; the status tools read
+`checkpoint.json` / `heartbeat.json` / `stage-*/stage_health.json`, so they also
+report on runs started from the CLI. Register it in pi:
+
+```bash
+pi mcp add researchclaw -- python -m researchclaw mcp --start -c config.arc.yaml
+```
+
+Only stdio transport is implemented; stdout is the JSON-RPC stream (diagnostics
+go to stderr), so do not wrap it in shell aliases that print to stdout.
+
 ### Copilot CLI (GitHub)
 
 GitHub Copilot can be used as an ACP agent via the `gh` CLI command (GitHub CLI with Copilot extension). Set the ACP agent to `gh` in your config:
@@ -825,7 +846,7 @@ Prerequisites:
 
 ### OpenCode
 
-OpenCode loads skills from `.claude/skills/`. The `researchclaw` skill activates on research-related queries and guides the agent through the pipeline.
+OpenCode loads skills from `.agents/skills/`. The `researchclaw` skill activates on research-related queries and guides the agent through the pipeline.
 
 ### Any AI CLI
 
@@ -835,7 +856,7 @@ Provide `RESEARCHCLAW_AGENTS.md` (if generated locally) or `README.md` as contex
 - Pipeline stage reference
 - Decision guide for common scenarios
 
-The agent reads this file and knows how to install, configure, and run the pipeline. If the file is not present, the `README.md` and `.claude/skills/researchclaw/SKILL.md` provide sufficient context for any AI assistant to operate the pipeline.
+The agent reads this file and knows how to install, configure, and run the pipeline. If the file is not present, the `README.md` and `.agents/skills/researchclaw/SKILL.md` provide sufficient context for any AI assistant to operate the pipeline.
 
 ---
 

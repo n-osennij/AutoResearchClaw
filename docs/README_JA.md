@@ -71,7 +71,7 @@
 ## 🔥 News
 - **[05/19/2026]** **v0.5.0** — **マルチドメイン実験エージェント + ARC-Bench** — 2 つの主要アップデート。**(1) ドメイン特化型実行エージェント：** 実験ステージ（ステージ 10〜13）は、デフォルトの ML サンドボックスを超えて分野ごとの専門エージェントにルーティングされます——**高エネルギー物理**（ColliderAgent：FeynRules → MadGraph5 → Delphes、Magnus クラウド経由）、**生物学**（COBRApy ゲノムスケール代謝モデリング）、**統計学**（シミュレーション研究エージェント）。化学・材料は汎用 Docker エグゼキューターが担当します。パイプラインは研究領域から適切なエグゼキューターを自動選択します。**(2) ARC-Bench：** **55 トピック**のオープンエンド自律研究ベンチマーク。**ML（25）、高エネルギー物理（10）、量子（10）、生物（7）、統計（3）** を対象とし、各トピックにマニフェストと採点ルーブリックが付属します（`experiments/arc_bench/`、さらに [🤗 Hugging Face](https://huggingface.co/datasets/AIMING-Lab-UNC/ARC-Bench) でも公開）。**[→ ドメイン統合ガイド](DOMAIN_INTEGRATION_GUIDE.md)**
 - **[04/01/2026]** **v0.4.0** — **Human-in-the-Loop コパイロットシステム** — AutoResearchClawは完全自律だけではなくなりました。新しいHITLシステムにより、6つの介入モード（`full-auto`、`gate-only`、`checkpoint`、`step-by-step`、`co-pilot`、`custom`）、ステージごとのポリシー、人間とAIの深い協調が追加されます。仮説の共同作成のためのアイデアワークショップ、実験設計レビューのためのベースラインナビゲーター、協調的ドラフト作成のための論文コライター、SmartPause（信頼度駆動の動的介入）、ALHF介入学習、反幻覚クレーム検証、コスト予算ガードレール、並列仮説探索のためのパイプラインブランチ、CLIコマンド（`attach`/`status`/`approve`/`reject`/`guide`）を含みます。**[→ 完全HITLガイド](HITL_GUIDE.md)**
-- **[03/30/2026]** **フレキシブルスキルローディング** — AutoResearchClawは、研究体験をさらに向上させるために、オープンソースおよびカスタムスキルのロードに対応しました。科学的ライティング、実験設計、化学、生物学などをカバーする20のプリロードスキルがすぐに使えるリファレンスとして含まれており、コミュニティ提供の[A-Evolve](https://github.com/A-EVO-Lab/a-evolve)エージェント進化スキルも含まれています。`researchclaw skills install`でインストールするか、`.claude/skills/`に`SKILL.md`を配置してください。[スキルライブラリ](#-スキルライブラリ)を参照。
+- **[03/30/2026]** **フレキシブルスキルローディング** — AutoResearchClawは、研究体験をさらに向上させるために、オープンソースおよびカスタムスキルのロードに対応しました。科学的ライティング、実験設計、化学、生物学などをカバーする20のプリロードスキルがすぐに使えるリファレンスとして含まれており、コミュニティ提供の[A-Evolve](https://github.com/A-EVO-Lab/a-evolve)エージェント進化スキルも含まれています。`researchclaw skills install`でインストールするか、`.agents/skills/`に`SKILL.md`を配置してください。[スキルライブラリ](#-スキルライブラリ)を参照。
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **クロスプラットフォーム対応 + 安定性大幅向上** — ACP互換AIエージェントバックエンド（Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Kimi CLI）に対応し、OpenClawブリッジ経由でメッセージングプラットフォーム（Discord、Telegram、Lark、WeChat）もサポート。新しいCLIエージェントコード生成バックエンドにより、ステージ10と13を外部CLIエージェントに委任し、予算制御とタイムアウト管理に対応。反データ捏造システム（VerifiedRegistry + 実験診断・修復ループ）、100件以上のバグ修正、モジュラーexecutorリファクタリング、`--resume`自動検出、LLMリトライ強化、コミュニティ報告の修正を含む。
 
 <details>
@@ -275,7 +275,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 | **Python API** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | `RESEARCHCLAW_CLAUDE.md`を読み取り — *「Run research on [トピック]」*と言うだけ |
 | **Copilot CLI** | `researchclaw run --topic "..."` で `llm.acp.agent: "gh"` を使用 |
-| **OpenCode** | `.claude/skills/`を読み取り — 同じ自然言語インターフェース |
+| **OpenCode** | `.agents/skills/`を読み取り — 同じ自然言語インターフェース |
 | **任意のAI CLI** | `RESEARCHCLAW_AGENTS.md`をコンテキストとして提供 → エージェントが自動ブートストラップ |
 
 ---
@@ -552,7 +552,7 @@ AutoResearchClawは、研究体験をさらに向上させるために**オー�
 researchclaw skills install /path/to/my-skill/
 
 # オプション2: プロジェクトにSKILL.mdを配置
-mkdir -p .claude/skills/my-custom-skill
+mkdir -p .agents/skills/my-custom-skill
 # YAMLフロントマター（name, description, trigger-keywords, applicable-stages）付きのSKILL.mdを作成
 
 # オプション3: config.arc.yamlで共有スキルディレクトリを設定

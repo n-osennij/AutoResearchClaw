@@ -74,19 +74,37 @@ terminal — prefer the subcommands from an agent.
   models, and use pi for gate decisions, artifact review and repair. A 23-stage
   run on one ACP session is slow and accumulates a lot of context.
 
-## Things that look configurable but are not (yet)
+## Codegen and experiment CLIs
 
+- `experiment.cli_agent.provider` accepts `llm`, `claude_code`, `codex`, `pi`.
+  `pi` runs `pi -p <prompt> --no-session --mode text --tools read,bash,edit,write`
+  in the experiment workdir; pi has no `--max-budget-usd`, so that setting is
+  ignored for it.
+- The domain experiment agents (`collider_agent`, `biology_agent`,
+  `stat_agent`) shell out to `<claude_binary> -p <instruction>`. `--max-turns`
+  is appended **only** for Claude binaries, so `pi`, `codex` or `opencode` can
+  be used via `claude_binary` without hitting an unknown flag.
 - `experiment.sandbox.allowed_imports` is **documentation only** — nothing
   enforces it; isolation is the subprocess plus the timeout.
-- `researchclaw mcp --start` is a **stub**: `server.start()` only flips a flag,
-  there is no transport loop, and the handlers return placeholder data. Do not
-  register it as an MCP server.
-- `experiment.cli_agent.provider` accepts only `llm`, `claude_code`, `codex`.
-  `pi` is not a supported codegen CLI provider (use `llm.provider: acp` if pi
-  should do the generation).
-- The domain experiment agents (`collider_agent`, `biology_agent`,
-  `stat_agent`) shell out to `claude -p ... --max-turns N`. `claude_binary` can
-  point elsewhere, but the `--max-turns` flag is Claude-specific.
-- `.claude/skills/` is the **pipeline's** skill library (builtin + user +
-  project dirs scanned by `researchclaw skills list`), not the agent's own
-  skill directory. pi reads `~/.agents/skills/` and `.agents/skills/`.
+
+## MCP server (real)
+
+`researchclaw mcp --start -c config.yaml` serves JSON-RPC 2.0 over stdio with
+newline-delimited framing (MCP spec) and exposes six working tools. Register it
+in pi once:
+
+```bash
+pi mcp add researchclaw -- python -m researchclaw mcp --start -c config.arc.yaml
+```
+
+`run_pipeline` starts a background thread running the real pipeline,
+`get_pipeline_status` reads `checkpoint.json` / `heartbeat.json` / per-stage
+health, `search_literature` calls the literature layer, `review_paper` asks the
+configured LLM. Only stdio transport is implemented; stdout is the protocol
+stream, so diagnostics go to stderr.
+- `.agents/skills/` is shared on purpose: the pipeline's skill library
+  (builtin + `~/.researchclaw/skills` + project dirs, listed by
+  `researchclaw skills list`) *and* pi's project skill directory, so the
+  `researchclaw` skill there loads for both. `~/.agents/skills/` is the
+  user-level pi directory; `.claude/skills/` is a legacy fallback the pipeline
+  still scans.

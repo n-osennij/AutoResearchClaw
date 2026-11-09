@@ -14,6 +14,21 @@ logger = logging.getLogger(__name__)
 # Default builtin directory relative to this file
 _BUILTIN_DIR = Path(__file__).parent / "builtin"
 
+#: Where project-level skills are looked for, in priority order. ``.agents``
+#: follows the Agent Skills convention and is what pi discovers; ``.claude``
+#: stays as a fallback for clones created before the move.
+PROJECT_SKILLS_DIRS: tuple[str, ...] = (".agents/skills", ".claude/skills")
+
+
+def find_project_skills_dir(root: Path | str = ".") -> Path | None:
+    """Return the first existing project skill directory under *root*."""
+    base = Path(root)
+    for relative in PROJECT_SKILLS_DIRS:
+        candidate = base / relative
+        if candidate.is_dir():
+            return candidate
+    return None
+
 
 class SkillRegistry:
     """Central registry for managing and querying skills.

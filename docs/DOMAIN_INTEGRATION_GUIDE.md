@@ -578,9 +578,12 @@ class MyDomainAgentSandbox:
     def _build_command(self) -> list[str]:
         binary = self.config.claude_binary or shutil.which("claude") or "claude"
         cmd = [binary, "-p", _CLAUDE_INSTRUCTION]
-        if self.config.max_turns > 0:
-            cmd += ["--max-turns", str(self.config.max_turns)]
-        cmd += [a for a in self.config.extra_args if a]
+        # --max-turns is Claude-specific: pi/codex/opencode reject the flag.
+        cmd += agent_cli_flags(
+            binary,
+            max_turns=self.config.max_turns,
+            extra_args=self.config.extra_args,
+        )
         return cmd
 
     def _build_env(self) -> dict[str, str]:

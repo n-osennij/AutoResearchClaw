@@ -156,10 +156,11 @@ experiment:
   max_iterations: 10
   metric_key: "primary_metric"
   metric_direction: "minimize"
-  # Stages 10/13 code generation backend. Only these three are valid:
+  # Stages 10/13 code generation backend. Valid values:
   #   llm          — reuse the chat client (default)
   #   claude_code  — Claude Code CLI (`claude -p`), needs ANTHROPIC_AUTH_TOKEN
   #   codex        — OpenAI Codex CLI (`codex exec`), needs OPENAI_API_KEY
+  #   pi           — pi CLI (`pi -p`, tools write the files), uses pi's own auth
   # An ACP provider (`llm.provider: acp`) already routes codegen through the
   # agent, so leave this at "llm" in that case.
   # cli_agent:

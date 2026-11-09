@@ -70,7 +70,7 @@
 ## 🔥 News
 - **[05/19/2026]** **v0.5.0** — **Multi-Domain Experiment Agents + ARC-Bench** — Two headline updates. **(1) Domain-specialist execution agents:** the experiment stage (Stages 10–13) now routes beyond the default ML sandbox to specialist agents per field — **high-energy physics** (ColliderAgent: Lagrangian → FeynRules → MadGraph5 → Delphes via the Magnus cloud), **biology** (COBRApy genome-scale metabolic modelling), and **statistics** (simulation-study agent), with a generic Docker executor covering chemistry/materials. The pipeline auto-selects the right executor from the research domain. **(2) ARC-Bench:** a **55-topic** open-ended autonomous-research benchmark spanning **ML (25), HEP (10), quantum (10), biology (7), and statistics (3)** — each topic ships a manifest (research question + conditions + metrics + datasets) and a rubric for graded scoring, all under [`experiments/arc_bench/`](experiments/arc_bench/), and also released on [🤗 Hugging Face](https://huggingface.co/datasets/AIMING-Lab-UNC/ARC-Bench). **[→ Domain Integration Guide](docs/DOMAIN_INTEGRATION_GUIDE.md)**
 - **[04/01/2026]** **v0.4.0** — **Human-in-the-Loop Co-Pilot System** — AutoResearchClaw is no longer purely autonomous. New HITL system adds 6 intervention modes (`full-auto`, `gate-only`, `checkpoint`, `step-by-step`, `co-pilot`, `custom`), per-stage policies, and deep human-AI collaboration. Includes: Idea Workshop for hypothesis co-creation, Baseline Navigator for experiment design review, Paper Co-Writer for collaborative drafting, SmartPause (confidence-driven dynamic intervention), ALHF intervention learning, anti-hallucination claim verification, cost budget guardrails, pipeline branching for parallel hypothesis exploration, and CLI commands (`attach`/`status`/`approve`/`reject`/`guide`). **[→ Full HITL Guide](docs/HITL_GUIDE.md)**
-- **[03/30/2026]** **Flexible Skill Loading** — AutoResearchClaw now supports loading open-source and custom skills from any discipline to further enhance your research experience. 20 pre-loaded skills are included as ready-to-use references, covering scientific writing, experiment design, chemistry, biology, and more — including an [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) agentic evolution skill contributed by the community. Load your own via `researchclaw skills install` or drop a `SKILL.md` into `.claude/skills/`. See [Skills Library](#-skills-library).
+- **[03/30/2026]** **Flexible Skill Loading** — AutoResearchClaw now supports loading open-source and custom skills from any discipline to further enhance your research experience. 20 pre-loaded skills are included as ready-to-use references, covering scientific writing, experiment design, chemistry, biology, and more — including an [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) agentic evolution skill contributed by the community. Load your own via `researchclaw skills install` or drop a `SKILL.md` into `.agents/skills/`. See [Skills Library](#-skills-library).
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **Cross-Platform Support + Major Stability** — AutoResearchClaw now runs on any ACP-compatible agent backend (Claude Code, Codex CLI, Copilot CLI, Gemini CLI, Kimi CLI) and supports messaging platforms (Discord, Telegram, Lark, WeChat) via OpenClaw bridge. New CLI-agent code generation backend delegates Stages 10 & 13 to external CLI agents with budget control and timeout management. Also includes anti-fabrication system (VerifiedRegistry + experiment diagnosis & repair loop), 100+ bug fixes, modular executor refactoring, `--resume` auto-detection, LLM retry hardening, and community-reported fixes.
 
 <details>
@@ -272,6 +272,23 @@ now checks both the agent binary and the launcher. With `provider: "acp"` the
 reviewer and the debate panel reuse the same agent — no separate reviewer model
 is built for ACP runs.
 
+### MCP server
+
+`researchclaw mcp --start -c config.yaml` speaks JSON-RPC 2.0 over stdio with
+newline-delimited framing (the MCP spec) and exposes six tools:
+`run_pipeline`, `get_pipeline_status`, `get_experiment_results`,
+`search_literature`, `review_paper`, `get_paper`. `run_pipeline` starts a real
+pipeline run in a background thread; status/results are read from the run
+directory, so tools also work for runs started from the CLI.
+
+```bash
+# register once, then use the tools from the agent
+pi mcp add researchclaw -- python -m researchclaw mcp --start -c config.arc.yaml
+```
+
+stdout carries the protocol — diagnostics go to stderr. Only the stdio transport
+is implemented.
+
 ### 🛠️ Other Ways to Run
 
 | Method | How |
@@ -281,7 +298,7 @@ is built for ACP runs.
 | **Claude Code** | Reads `RESEARCHCLAW_CLAUDE.md` — just say *"Run research on [topic]"* |
 | **pi** | Reads `AGENTS.md`; can also be the LLM backend via `llm.provider: acp` + `llm.acp.agent: "pi"` |
 | **Copilot CLI** | `researchclaw run --topic "..."` with `llm.acp.agent: "gh"` |
-| **OpenCode** | Reads `.claude/skills/` — same natural language interface |
+| **OpenCode** | Reads `.agents/skills/` — same natural language interface |
 | **Any AI CLI** | Provide `RESEARCHCLAW_AGENTS.md` as context → agent auto-bootstraps |
 
 ---
@@ -559,7 +576,7 @@ AutoResearchClaw now supports loading **open-source and custom skills** to furth
 researchclaw skills install /path/to/my-skill/
 
 # Option 2: Drop a SKILL.md into the project
-mkdir -p .claude/skills/my-custom-skill
+mkdir -p .agents/skills/my-custom-skill
 # Then create a SKILL.md with YAML frontmatter (name, description, trigger-keywords, applicable-stages)
 
 # Option 3: Configure shared skill directories in config.arc.yaml
@@ -668,6 +685,12 @@ experiment:
     timeout_sec: 600                 # Max seconds for OpenCode generation
     max_retries: 1                   # Retry count on failure
     workspace_cleanup: true          # Remove temp workspace after collection
+  cli_agent:                         # Codegen backend for Stages 10 & 13
+    provider: "llm"                  # llm | claude_code | codex | pi
+    binary_path: ""                  # auto-detected via PATH if empty
+    model: ""                        # CLI-specific model override
+    max_budget_usd: 5.0              # ignored by pi (no such flag)
+    timeout_sec: 600
   code_agent:                        # CodeAgent v2 — multi-phase code generation
     enabled: true                    # Use CodeAgent instead of legacy single-prompt codegen
     architecture_planning: true      # Generate deep implementation blueprint before coding

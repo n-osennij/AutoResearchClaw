@@ -71,7 +71,7 @@
 ## 🔥 News
 - **[05/19/2026]** **v0.5.0** — **وكلاء تجارب متعددة المجالات + ARC-Bench** — تحديثان رئيسيان. **(1) وكلاء تنفيذ متخصصون حسب المجال:** أصبحت مرحلة التجارب (المراحل 10–13) توجّه المهام إلى وكلاء متخصصين حسب التخصص بدلاً من بيئة ML الافتراضية فقط — **فيزياء الطاقة العالية** (ColliderAgent: FeynRules، MadGraph5، Delphes عبر سحابة Magnus)، و**الأحياء** (نمذجة الأيض على مستوى الجينوم باستخدام COBRApy)، و**الإحصاء** (وكيل دراسات المحاكاة)، مع منفّذ Docker عام للكيمياء/المواد. يختار المسار التنفيذي المنفّذ المناسب تلقائيًا حسب مجال البحث. **(2) ARC-Bench:** معيار مرجعي مفتوح للبحث الذاتي يضم **55 موضوعًا** يغطي **ML (25)، وفيزياء الطاقة العالية (10)، والكم (10)، والأحياء (7)، والإحصاء (3)**، مع بيان (manifest) ومقياس تقييم (rubric) لكل موضوع (`experiments/arc_bench/`، ومتاح أيضًا على [🤗 Hugging Face](https://huggingface.co/datasets/AIMING-Lab-UNC/ARC-Bench)). **[→ دليل تكامل المجالات](DOMAIN_INTEGRATION_GUIDE.md)**
 - **[04/01/2026]** **v0.4.0** — **نظام مساعد الطيار Human-in-the-Loop** — لم يعد AutoResearchClaw مستقلاً بالكامل فحسب. نظام HITL الجديد يضيف 6 أوضاع تدخل (`full-auto`، `gate-only`، `checkpoint`، `step-by-step`، `co-pilot`، `custom`)، وسياسات لكل مرحلة، وتعاون عميق بين الإنسان والذكاء الاصطناعي. يتضمن: ورشة الأفكار لتطوير الفرضيات التعاوني، متصفح خطوط الأساس لمراجعة تصميم التجارب، الكاتب المشارك للورقة للصياغة التعاونية، SmartPause (تدخل ديناميكي مدفوع بالثقة)، تعلّم التدخل ALHF، التحقق من الادعاءات لمكافحة الهلوسة، حواجز ميزانية التكلفة، تفريع خط الأنابيب لاستكشاف فرضيات متوازية، وأوامر CLI (`attach`/`status`/`approve`/`reject`/`guide`). **[→ دليل HITL الكامل](HITL_GUIDE.md)**
-- **[03/30/2026]** **تحميل مرن للمهارات** — يدعم AutoResearchClaw الآن تحميل مهارات مفتوحة المصدر ومخصصة من أي تخصص لتعزيز تجربتك البحثية. 20 مهارة مُحمّلة مسبقاً متضمنة كمراجع جاهزة للاستخدام، تغطي الكتابة العلمية وتصميم التجارب والكيمياء والأحياء والمزيد — بما في ذلك مهارة [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) للتطور الذكي ساهم بها المجتمع. حمّل مهاراتك عبر `researchclaw skills install` أو ضع `SKILL.md` في `.claude/skills/`. انظر [مكتبة المهارات](#-مكتبة-المهارات).
+- **[03/30/2026]** **تحميل مرن للمهارات** — يدعم AutoResearchClaw الآن تحميل مهارات مفتوحة المصدر ومخصصة من أي تخصص لتعزيز تجربتك البحثية. 20 مهارة مُحمّلة مسبقاً متضمنة كمراجع جاهزة للاستخدام، تغطي الكتابة العلمية وتصميم التجارب والكيمياء والأحياء والمزيد — بما في ذلك مهارة [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) للتطور الذكي ساهم بها المجتمع. حمّل مهاراتك عبر `researchclaw skills install` أو ضع `SKILL.md` في `.agents/skills/`. انظر [مكتبة المهارات](#-مكتبة-المهارات).
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **دعم متعدد المنصات + استقرار كبير** — يعمل AutoResearchClaw الآن مع أي وكيل متوافق مع ACP (Claude Code، Codex CLI، Copilot CLI، Gemini CLI، Kimi CLI) ويدعم منصات المراسلة (Discord، Telegram، Lark، WeChat) عبر جسر OpenClaw. واجهة خلفية جديدة لتوليد الكود عبر CLI-agent تفوّض المرحلتين 10 و13 لوكلاء CLI خارجيين مع التحكم في الميزانية وإدارة المهلة الزمنية. يتضمن نظام مكافحة التلفيق (VerifiedRegistry + حلقة تشخيص وإصلاح التجارب)، 100+ إصلاح أخطاء، إعادة هيكلة modular executor، كشف تلقائي لـ `--resume`، تعزيز إعادة محاولات LLM، وإصلاحات المجتمع.
 
 <details>
@@ -275,7 +275,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 | **واجهة Python البرمجية** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | يقرأ `RESEARCHCLAW_CLAUDE.md` — فقط قل *"شغّل بحثاً عن [موضوع]"* |
 | **Copilot CLI** | `researchclaw run --topic "..."` مع `llm.acp.agent: "gh"` |
-| **OpenCode** | يقرأ `.claude/skills/` — نفس واجهة اللغة الطبيعية |
+| **OpenCode** | يقرأ `.agents/skills/` — نفس واجهة اللغة الطبيعية |
 | **أي واجهة ذكاء اصطناعي** | قدّم `RESEARCHCLAW_AGENTS.md` كسياق → الوكيل يبدأ تلقائياً |
 
 ---
@@ -552,7 +552,7 @@ researchclaw run --config config.arc.yaml --topic "Your idea" --auto-approve
 researchclaw skills install /path/to/my-skill/
 
 # الخيار 2: ضع SKILL.md في المشروع
-mkdir -p .claude/skills/my-custom-skill
+mkdir -p .agents/skills/my-custom-skill
 # ثم أنشئ SKILL.md مع بيانات YAML وصفية (name، description، trigger-keywords، applicable-stages)
 
 # الخيار 3: هيّئ مجلدات مهارات مشتركة في config.arc.yaml

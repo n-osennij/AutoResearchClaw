@@ -14,6 +14,11 @@ workspaces/
 !.claude/skills/**/SKILL.md
 .claude/settings.local.json
 
+# Project skills — canonical location for the pipeline and for pi
+.agents/*
+!.agents/skills/
+!.agents/skills/**/SKILL.md
+
 # Experiment run artifacts (pipeline outputs — local only, never committed)
 artifacts/
 /artifacts

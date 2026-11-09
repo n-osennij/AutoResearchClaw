@@ -71,7 +71,7 @@
 ## 🔥 News
 - **[05/19/2026]** **v0.5.0** — **Multi-Domain-Experimentagenten + ARC-Bench** — Zwei wesentliche Updates. **(1) Domaenenspezifische Ausfuehrungsagenten:** Die Experimentphase (Stufen 10–13) leitet nun ueber die Standard-ML-Sandbox hinaus an Fachagenten weiter — **Hochenergiephysik** (ColliderAgent: FeynRules → MadGraph5 → Delphes ueber die Magnus-Cloud), **Biologie** (COBRApy-Stoffwechselmodellierung im Genommassstab) und **Statistik** (Simulationsstudien-Agent), mit einem generischen Docker-Executor fuer Chemie/Materialien. Die Pipeline waehlt den passenden Executor automatisch anhand der Forschungsdomaene. **(2) ARC-Bench:** ein offener Benchmark fuer autonome Forschung mit **55 Themen**, der **ML (25), Hochenergiephysik (10), Quanten (10), Biologie (7) und Statistik (3)** abdeckt — jedes Thema mit Manifest und Bewertungsrubrik (`experiments/arc_bench/`, jetzt auch auf [🤗 Hugging Face](https://huggingface.co/datasets/AIMING-Lab-UNC/ARC-Bench)). **[→ Leitfaden zur Domaenenintegration](DOMAIN_INTEGRATION_GUIDE.md)**
 - **[04/01/2026]** **v0.4.0** — **Human-in-the-Loop Co-Pilot-System** — AutoResearchClaw ist nicht mehr rein autonom. Das neue HITL-System fuegt 6 Interventionsmodi hinzu (`full-auto`, `gate-only`, `checkpoint`, `step-by-step`, `co-pilot`, `custom`), stufenspezifische Richtlinien und tiefe Mensch-KI-Kollaboration. Enthalten: Ideen-Workshop zur gemeinsamen Hypothesenerstellung, Baseline-Navigator zur Ueberpruefung des Experimentdesigns, Paper-Co-Writer fuer kollaboratives Verfassen, SmartPause (konfidenzgesteuerte dynamische Intervention), ALHF-Interventionslernen, Anti-Halluzinations-Behauptungsverifikation, Kostenbudget-Leitplanken, Pipeline-Verzweigung fuer parallele Hypothesenerkundung und CLI-Befehle (`attach`/`status`/`approve`/`reject`/`guide`). **[→ Vollstaendige HITL-Anleitung](HITL_GUIDE.md)**
-- **[03/30/2026]** **Flexibles Skill-Laden** — AutoResearchClaw unterstuetzt jetzt das Laden von Open-Source- und benutzerdefinierten Skills aus jeder Disziplin, um Ihr Forschungserlebnis weiter zu verbessern. 20 vorinstallierte Skills sind als sofort einsetzbare Referenzen enthalten, die wissenschaftliches Schreiben, Experimentdesign, Chemie, Biologie und mehr abdecken — einschliesslich eines [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) Agentic-Evolution-Skills, der von der Community beigesteuert wurde. Laden Sie eigene ueber `researchclaw skills install` oder legen Sie eine `SKILL.md` in `.claude/skills/` ab. Siehe [Skills-Bibliothek](#-skills-bibliothek).
+- **[03/30/2026]** **Flexibles Skill-Laden** — AutoResearchClaw unterstuetzt jetzt das Laden von Open-Source- und benutzerdefinierten Skills aus jeder Disziplin, um Ihr Forschungserlebnis weiter zu verbessern. 20 vorinstallierte Skills sind als sofort einsetzbare Referenzen enthalten, die wissenschaftliches Schreiben, Experimentdesign, Chemie, Biologie und mehr abdecken — einschliesslich eines [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) Agentic-Evolution-Skills, der von der Community beigesteuert wurde. Laden Sie eigene ueber `researchclaw skills install` oder legen Sie eine `SKILL.md` in `.agents/skills/` ab. Siehe [Skills-Bibliothek](#-skills-bibliothek).
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **Plattformuebergreifende Unterstuetzung + grosse Stabilitaet** — AutoResearchClaw laeuft jetzt mit jedem ACP-kompatiblen Agenten-Backend (Claude Code, Codex CLI, Copilot CLI, Gemini CLI, Kimi CLI) und unterstuetzt Messaging-Plattformen (Discord, Telegram, Lark, WeChat) ueber die OpenClaw-Bruecke. Neues CLI-Agent-Code-Generierungs-Backend delegiert Stages 10 und 13 an externe CLI-Agenten mit Budgetkontrolle und Timeout-Management. Enthaelt Anti-Fabrication-System (VerifiedRegistry + Experiment-Diagnose- und Reparaturschleife), 100+ Bugfixes, modulares Executor-Refactoring, `--resume` Auto-Erkennung, LLM-Retry-Haertung und Community-Fixes.
 
 <details>
@@ -275,7 +275,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 | **Python API** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | Liest `RESEARCHCLAW_CLAUDE.md` — sage einfach *"Run research on [Thema]"* |
 | **Copilot CLI** | `researchclaw run --topic "..."` mit `llm.acp.agent: "gh"` |
-| **OpenCode** | Liest `.claude/skills/` — gleiche natuerliche Sprachschnittstelle |
+| **OpenCode** | Liest `.agents/skills/` — gleiche natuerliche Sprachschnittstelle |
 | **Jeder KI-CLI** | Uebergib `RESEARCHCLAW_AGENTS.md` als Kontext → Agent bootstrappt automatisch |
 
 ---
@@ -552,7 +552,7 @@ AutoResearchClaw unterstuetzt jetzt das Laden von **Open-Source- und benutzerdef
 researchclaw skills install /path/to/my-skill/
 
 # Option 2: SKILL.md ins Projekt legen
-mkdir -p .claude/skills/my-custom-skill
+mkdir -p .agents/skills/my-custom-skill
 # Dann eine SKILL.md mit YAML-Frontmatter erstellen (name, description, trigger-keywords, applicable-stages)
 
 # Option 3: Gemeinsame Skill-Verzeichnisse in config.arc.yaml konfigurieren

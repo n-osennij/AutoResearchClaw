@@ -67,7 +67,7 @@ def _get_skill_registry(config: object | None = None) -> object:
     Loads skills from (in priority order):
     1. Built-in skills shipped with the package
     2. User-level ``~/.researchclaw/skills/``
-    3. Project-level ``.claude/skills/``
+    3. Project-level ``.agents/skills/`` (legacy ``.claude/skills/``)
     4. MetaClaw cross-run skills ``~/.metaclaw/skills/``
     5. User-configured ``config.yaml → skills.custom_dirs``
     """
@@ -83,9 +83,13 @@ def _get_skill_registry(config: object | None = None) -> object:
         if _USER_SKILLS_DIR.is_dir():
             custom_dirs.append(str(_USER_SKILLS_DIR))
 
-        # Project-level .claude/skills/
-        project_skills = Path(__file__).resolve().parent.parent.parent / ".claude" / "skills"
-        if project_skills.is_dir():
+        # Project-level skills (.agents/skills, legacy .claude/skills)
+        from researchclaw.skills.registry import find_project_skills_dir
+
+        project_skills = find_project_skills_dir(
+            Path(__file__).resolve().parent.parent.parent
+        )
+        if project_skills is not None:
             custom_dirs.append(str(project_skills))
 
         # MetaClaw skills

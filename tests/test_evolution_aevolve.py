@@ -355,19 +355,19 @@ class TestLoadProjectSkills:
     def test_load_project_skills_finds_skill(self, tmp_path: Path, monkeypatch):
         from researchclaw import evolution
 
-        # Create a fake .claude/skills/test-skill/SKILL.md
-        skill_dir = tmp_path / ".claude" / "skills" / "test-skill"
+        # Create a fake .agents/skills/test-skill/SKILL.md
+        skill_dir = tmp_path / ".agents" / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("# Test Skill\nDo something.")
 
         # Also create the researchclaw skill (should be skipped)
-        rc_dir = tmp_path / ".claude" / "skills" / "researchclaw"
+        rc_dir = tmp_path / ".agents" / "skills" / "researchclaw"
         rc_dir.mkdir(parents=True)
         (rc_dir / "SKILL.md").write_text("# CLI Skill\nShould be skipped.")
 
         # Patch the root detection
         monkeypatch.setattr(
-            evolution, "_PROJECT_SKILLS_DIRS", (".claude/skills",)
+            evolution, "_PROJECT_SKILLS_DIRS", (".agents/skills",)
         )
         # Patch Path(__file__).parent.parent to our tmp_path
         original_func = evolution._load_project_skills
