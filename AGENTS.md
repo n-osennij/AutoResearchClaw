@@ -14,6 +14,7 @@ Deeper references, read on demand:
 | `RESEARCHCLAW_CLAUDE.md` | compact architecture brief |
 | `README.md` → ⚙️ Configuration Reference | every config key, provider presets, ACP table |
 | `docs/integration-guide.md` | human walkthrough: setup, stages, artifacts, troubleshooting |
+| `docs/LITERATURE_SEARCH.md` | Stages 3–6 in detail: source keys, year/hybrid policy, screening budget math, cache |
 
 ## First commands
 

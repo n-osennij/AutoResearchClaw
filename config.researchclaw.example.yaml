@@ -337,9 +337,11 @@ experiment:
 
 # === Prompts ===
 # Customize LLM prompts by pointing to your own YAML file.
-# Copy prompts.default.yaml, edit the prompts you want, and set the path here.
+# prompts.default.yaml is GENERATED from the built-in prompt bank and mirrors it
+# exactly, so copying it changes nothing until you edit a stage/block. Regenerate
+# after upgrades with: python scripts/export_prompts.py [--domain hep_ph]
 prompts:
-  custom_file: ""  # e.g. "my_prompts.yaml" (empty = use built-in defaults)
+  custom_file: ""  # e.g. "my_prompts.yaml" (empty = built-in defaults)
 
   # Per-stage additional guidance. Each key is a stage name (run
   # `researchclaw info` to see the full stage list); each value is either

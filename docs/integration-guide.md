@@ -216,6 +216,9 @@ it, so switching the floor cannot resurrect old hits; Stage 4 and `doctor` warn
 when the cached policy no longer matches. Clear it with
 `rm -rf .researchclaw_cache/literature`.
 
+Full reference for this whole layer (source keys, flow, capacity math, cache):
+[`docs/LITERATURE_SEARCH.md`](LITERATURE_SEARCH.md).
+
 ### Research Settings
 
 ```yaml

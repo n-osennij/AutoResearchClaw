@@ -1,22 +1,63 @@
 # =============================================================================
-# AutoResearchClaw — Default Prompt Templates
+# AutoResearchClaw — prompt override template (ml bank)
 # =============================================================================
+# GENERATED FILE — do not edit by hand if you want to stay in sync with the
+# built-in prompts. Regenerate with:
 #
-# Copy this file, edit any prompt you want to customize, and point your config
-# to the copy:
+#   python scripts/export_prompts.py --domain ml
+#
+# It mirrors the built-in bank exactly, so copying it and pointing config at the
+# copy changes nothing:
 #
 #   prompts:
 #     custom_file: "my_prompts.yaml"
 #
-# Template variables use {var_name} syntax — see docs/integration-guide.md
-# for a list of available variables per stage.
-#
-# Stages without an entry here (experiment_run, citation_verify) do not call
-# the LLM and therefore have no prompts to customize.
+# Edit only the stages/blocks you care about. Template variables use
+# {var_name} syntax; unknown stage names are warned about and ignored.
+# A stage entry replaces the whole `system` / `user` string of that stage.
 # =============================================================================
 
 blocks:
-  compute_budget: |
+  title_guidelines: |2
+
+    ## TITLE RULES (Hard Constraints)
+    1. MAXIMUM 14 words. Ideal: 8-12 words. NEVER exceed 14.
+    2. Preferred structure: 'MethodName: Descriptive Phrase' (colon format)
+       - Create a catchy 1-3 word method name (acronym, portmanteau, or evocative word)
+       - Subtitle explains what it does: 'for X' / 'via Y' / 'in Z'
+       - Examples: 'AlphaEdit: Null-Space Knowledge Editing for LMs' (8 words)
+       - Examples: 'VAR: Visual Autoregressive Modeling via Next-Scale Prediction' (8 words)
+    3. Alternative: Bold declarative claim that surprises the reader
+       - 'Not All Tokens Are What You Need for Pretraining' (9 words)
+       - 'Vision Transformers Need Registers' (4 words)
+    4. FORBIDDEN patterns:
+       - 'Investigating...', 'An Empirical Study of...', 'Towards...'
+       - 'A Novel Approach to...', 'On the...' (generic academic filler)
+       - Repeating the full method description as title
+       - Weakness qualifiers: 'in Two Runs', 'Under Limited Data'
+    5. MUST define a short method name (2-5 chars) that serves as memorable handle.
+       The reader should be able to say 'Have you read the X paper?'
+    6. No abbreviations unless universally known (LLM, RL, GAN, NLP are OK).
+  abstract_structure: |2
+
+    ## ABSTRACT (Hard Rules — 180-220 words, 5-7 sentences)
+    STRUCTURE (PMR+ format):
+    S1-S2: PROBLEM — What gap exists? Why does it matter? (NO method names yet)
+    S3-S4: METHOD — Name your system. One-sentence description of key insight.
+    S5-S6: RESULTS — At most 3 specific numbers. Use relative improvements
+      ('X% over baseline') not raw values ('0.7667'). Bold the single most
+      important result.
+    S7 (optional): IMPACT — What does this enable?
+
+    HARD CONSTRAINTS:
+    - NO \texttt{{}} in abstract
+    - NO more than 3 numeric values in the entire abstract
+    - NO per-seed breakdowns or confidence intervals
+    - NO method names longer than 3 words (use the short system name)
+    - The abstract must be readable by a researcher who skimmed only the title
+    - First sentence must NOT start with 'We' or 'This paper'
+  compute_budget: |2
+
     ## Compute Budget Constraint
     - Total execution time limit: {time_budget_sec} seconds
     - You MUST design experiments that complete within this budget
@@ -28,360 +69,719 @@ blocks:
       - If time_budget < 300s: limit total optimization steps to ≤5,000 per run
       - If time_budget < 120s: limit total optimization steps to ≤1,000 per run
       - Always print intermediate results so partial data is captured on timeout
-    - MANDATORY: print a "TIME_ESTIMATE: Xs" line before the main loop,
+    - MANDATORY: print a 'TIME_ESTIMATE: Xs' line before the main loop,
       estimating total runtime based on a small pilot (run 1 condition, extrapolate)
     - MANDATORY: implement a time guard — check elapsed time periodically and
       stop gracefully if approaching 80% of budget, saving all results collected so far
-
-  pkg_hint_sandbox: '
-
-    AVAILABLE PACKAGES (sandbox mode): Python stdlib, numpy, math, random, statistics, json.
-
-    Do NOT use: torch, tensorflow, jax, sklearn, pandas, scipy, matplotlib, or any deep learning framework.
-
-    Write the experiment using ONLY numpy and stdlib.
-
-    '
-  topic_constraint: '
+    - MANDATORY: add NaN/divergence fast-fail guard:
+      - After each optimization step, check if loss is NaN or > 100
+      - If detected, print 'FAIL: NaN/divergence detected', save partial results, and exit
+      - Do NOT waste compute on a diverging run
+    - MINIMUM TRAINING EPOCHS (CRITICAL for meaningful results):
+      - CIFAR-10/100 with ResNet/CNN: minimum 50 epochs (200 recommended)
+      - FashionMNIST with small CNN: minimum 20 epochs
+      - RL environments: follow the RL STEP BUDGET below (CRITICAL)
+      - If time_budget is too short for minimum epochs, REDUCE model complexity
+        or dataset size INSTEAD of reducing epochs. 8 epochs on CIFAR-10 will
+        produce random-chance accuracy (~10%), making all comparisons meaningless.
+      - Use a SMALL model (simple CNN, few layers) to fit enough epochs into the budget.
+      - A converged small model is worth infinitely more than a diverged large model.
+    - MANDATORY: use the experiment_harness module (pre-installed in sandbox):
+      ```
+      from experiment_harness import ExperimentHarness
+      harness = ExperimentHarness(time_budget={time_budget_sec})
+      # In your experiment loop:
+      if harness.should_stop():
+          break  # graceful stop at 80% of budget
+      if not harness.check_value(value, 'metric_name'):
+          print('SKIP: NaN/Inf detected')  # skip invalid values
+          continue
+      harness.report_metric('metric_name', value)  # validated output
+      # At the end of ALL experiments:
+      harness.finalize()  # writes results.json — MUST be called
+      ```
+      The harness provides: time budget enforcement, NaN/Inf detection,
+      validated metric reporting, and results.json output. NOT using it
+      means your metrics may be lost or malformed.
+  topic_constraint: |2
 
 
     === HARD TOPIC CONSTRAINT ===
-
     The paper MUST be about: {topic}
-
     PROHIBITED content (unless user explicitly specifies case-study mode):
-
     - Do NOT treat environment setup, dependency installation, or infrastructure failures as a research contribution.
-
     - Do NOT present debugging logs, system errors, or configuration issues as experimental findings.
-
     - Do NOT drift to tangential topics not directly related to the stated topic.
-
     - Every section MUST connect back to the core research question.
-
     - The Abstract and Introduction MUST clearly state the research problem derived from: {topic}
-
     - The Method section MUST describe a technical approach, not a workflow.
-
     - The Results section MUST report quantitative outcomes of experiments, not environment status.
-
     === END CONSTRAINT ===
+  pkg_hint_sandbox: |2
 
-    '
+    AVAILABLE PACKAGES (sandbox mode): Python stdlib, numpy, math, random, statistics, json.
+    Do NOT use: torch, tensorflow, jax, sklearn, pandas, scipy, matplotlib, or any deep learning framework.
+    Write the experiment using ONLY numpy and stdlib.
+  dataset_guidance: |2
+
+    ## Standard Datasets & Real Baselines (MANDATORY when applicable)
+    You MUST use real benchmark datasets — NEVER synthetic torch.randn() data.
+
+    ### Tier 1: Pre-cached (ALWAYS available, use download=False)
+    These datasets are already in the Docker image. Use download=False:
+    - `torchvision.datasets.CIFAR10(root='/opt/datasets', train=True/False, download=False)`
+    - `torchvision.datasets.CIFAR100(root='/opt/datasets', train=True/False, download=False)`
+    - `torchvision.datasets.MNIST(root='/opt/datasets', train=True/False, download=False)`
+    - `torchvision.datasets.FashionMNIST(root='/opt/datasets', train=True/False, download=False)`
+    - `torchvision.datasets.STL10(root='/opt/datasets', split='train'/'test', download=False)`
+    - `torchvision.datasets.SVHN(root='/opt/datasets', split='train'/'test', download=False)`
+
+    ### Tier 2: Downloadable (use setup.py to download before main.py runs)
+    For any dataset NOT in Tier 1, create a `setup.py` file that downloads it.
+    setup.py runs WITH network access; main.py runs WITHOUT network.
+    - Any torchvision dataset (Caltech-101, Flowers102, etc.)
+    - HuggingFace datasets: `from datasets import load_dataset`
+      Examples: IMDB, AG News, WikiText, SST-2, SQuAD, MMLU
+    - OGB benchmarks: ogbg-molhiv, ogbn-arxiv, etc.
+    - Tiny-ImageNet (237MB, 200 classes) — good ImageNet proxy
+
+    ### Tier 3: Too large for download (use alternatives)
+    These datasets are TOO LARGE to download within experiment time limits:
+    - ImageNet-1K (168GB) → use Tiny-ImageNet or CIFAR-100 as proxy
+    - LAION (>1TB) → use smaller HuggingFace image-text datasets
+    - Common Crawl, The Pile → use WikiText-103 or pre-tokenized subsets
+    NEVER generate 'ImageNet-like' synthetic data — always use a real alternative.
+
+    ### ANTI-PATTERNS (NEVER DO THESE):
+    - `torch.randn(N, 3, 224, 224)` as dataset → use real datasets
+    - `download=True` in main.py → put downloads in setup.py
+    - `download=False` for non-cached datasets → will FileNotFoundError
+    - Random train/test splits → use official splits from dataset
+    - `os.makedirs('/opt/datasets/...')` → /opt/datasets is READ-ONLY
+
+    DATA PATH: For Tier 1 pre-cached datasets, use `/opt/datasets` as root.
+    For Tier 2 datasets downloaded by setup.py, use `/workspace/data` as root.
+    WARNING: `/opt/datasets` is READ-ONLY. NEVER call os.makedirs() on it.
+    Just pass `root='/opt/datasets'` directly to torchvision dataset constructors.
+
+    DISTRIBUTION SHIFT — use torchvision corruption transforms:
+    - Gaussian noise: `transforms.Lambda(lambda x: x + torch.randn_like(x) * sigma)`
+    - Brightness shift: `transforms.ColorJitter(brightness=0.5)`
+    - Contrast shift: `transforms.ColorJitter(contrast=0.5)`
+    - Blur: `transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))`
+    - For CIFAR-10-C style corruptions, apply transforms to test set only.
+
+    REAL BASELINES & MODERN BENCHMARKS (CRITICAL):
+    - Use proper train/test splits from the dataset (never split randomly in code)
+    - Use standard architectures (ResNet-18/50, ViT, ConvNeXt) — not toy 2-layer MLPs
+    - CIFAR INPUT SIZE (IMPORTANT): CIFAR images are 32×32. Two valid approaches:
+      1. PRETRAINED models (ImageNet weights): Use `transforms.Resize(224)` — pretrained models require 224×224 inputs.
+      2. TRAINING FROM SCRATCH (most experiments): Modify the model for 32×32 inputs instead of resizing. For ResNet: use `nn.Conv2d(3,64,3,1,1)` as first conv (not 7×7/stride-2) and REMOVE the initial MaxPool. This is 49× more memory-efficient and trains faster than Resize(224). Use the `timm` library's CIFAR variants or build a custom `get_resnet18_cifar()` helper.
+    - Report standard metrics (top-1 accuracy for classification tasks)
+    - Compare against published baselines where available
+    - BASELINES MUST BE CURRENT: Use baselines from recent top-venue papers (2023-2026). Do NOT use outdated methods as the primary comparison.
+      * AlexNet, VGG-16 → use ResNet-50, ViT, ConvNeXt instead
+      * Vanilla SGD → use AdamW, SGD+momentum+cosine LR
+      * Simple RNN/LSTM for NLP → use Transformer-based models
+    - Include at LEAST one strong, modern baseline (near-SOTA).
+    - BENCHMARKS MUST BE STANDARD and actively used in the community.
+
+    WHEN TO USE SYNTHETIC DATA (required for these domains):
+    - **PDE / Scientific computing**: Generate synthetic PDE data (Burgers equation, Darcy flow, heat equation, Navier-Stokes). Use numerical solvers (scipy.integrate, finite differences) to create ground truth.
+    - **Combinatorial optimization** (TSP, graph coloring, scheduling): Generate random problem instances (random TSP cities, Erdos-Renyi graphs).
+    - **Theoretical analysis**: Synthetic optimization landscapes, toy problems.
+    - **Domain with no standard dataset**: Novel combinatorial or mathematical domains.
+    For these domains, do NOT use CIFAR/MNIST/ImageNet — they are irrelevant. Generate problem-specific synthetic data in main.py.
+
+    DOMAIN-DATASET MATCHING (CRITICAL):
+    - Image classification → CIFAR-10/100, MNIST, ImageNet variants
+    - NLP → IMDB, AG News, SST-2, WikiText
+    - Graph learning → Cora, CiteSeer, ogbn-arxiv
+    - PDE/Physics → SYNTHETIC (Burgers, Darcy, Navier-Stokes)
+    - Combinatorial optimization → SYNTHETIC (random TSP, graph instances)
+    - RL → Gymnasium environments (CartPole, LunarLander, HalfCheetah)
+    NEVER use image datasets for non-image problems.
+  setup_script_guidance: |2
+
+    ## Setup Script (setup.py) — Dataset Download & Preparation
+    If your experiment needs datasets NOT in the pre-cached list, generate a SEPARATE file called `setup.py` that downloads and prepares them.
+    The setup.py runs WITH NETWORK ACCESS before main.py (which runs WITHOUT network).
+
+    IMPORTANT: All download logic MUST be in setup.py, NOT in main.py.
+    main.py should only load pre-cached data from /opt/datasets (download=False) or downloaded data from /workspace/data.
+
+    Example setup.py:
+    ```python
+    import os
+    DATA_DIR = '/workspace/data'
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    # Download torchvision datasets
+    import torchvision
+    torchvision.datasets.Caltech101(root=DATA_DIR, download=True)
+
+    # Download HuggingFace datasets
+    from datasets import load_dataset
+    ds = load_dataset('imdb', cache_dir=os.path.join(DATA_DIR, 'hf'))
+
+    # Download OGB benchmarks
+    # from ogb.graphproppred import PygGraphPropPredDataset
+    # dataset = PygGraphPropPredDataset(name='ogbg-molhiv', root=DATA_DIR)
+
+    print('[setup] Dataset download complete.')
+    ```
+
+    IMPORT ANTI-PATTERN (NEVER DO THIS):
+    ```python
+    from datasets import load_dataset
+    datasets.load_dataset('imdb', ...)  # WRONG — NameError!
+    ```
+    If you write `from datasets import load_dataset`, call `load_dataset(...)` directly.
+    If you write `import datasets`, call `datasets.load_dataset(...)` with module prefix.
+    NEVER mix the two styles.
+
+    If ALL your datasets are pre-cached (CIFAR-10/100, MNIST, FashionMNIST, STL-10, SVHN), you do NOT need setup.py — just use download=False in main.py.
+
+    You may also include a `requirements.txt` file listing any additional pip packages your experiment needs beyond the pre-installed set.
+  network_disabled_guidance: |2
+
+    ## ⚠️ NO NETWORK ACCESS — CRITICAL CONSTRAINT ⚠️
+    This experiment runs with network_policy='none'. There is NO network access
+    at ANY phase (no pip install, no dataset downloads, no HTTP requests).
+
+    ### ONLY these pre-cached datasets are available:
+    - `torchvision.datasets.CIFAR10(root='/opt/datasets', train=True/False, download=False)`
+    - `torchvision.datasets.CIFAR100(root='/opt/datasets', train=True/False, download=False)`
+    - `torchvision.datasets.MNIST(root='/opt/datasets', train=True/False, download=False)`
+    - `torchvision.datasets.FashionMNIST(root='/opt/datasets', train=True/False, download=False)`
+    - `torchvision.datasets.STL10(root='/opt/datasets', split='train'/'test', download=False)`
+    - `torchvision.datasets.SVHN(root='/opt/datasets', split='train'/'test', download=False)`
+
+    ### FORBIDDEN (will cause runtime failure):
+    - Do NOT create setup.py (it cannot run without network)
+    - Do NOT create requirements.txt (pip install is unavailable)
+    - Do NOT use `download=True` on any dataset
+    - Do NOT use `urllib`, `requests`, `httpx`, or any HTTP library
+    - Do NOT use `datasets.load_dataset()` from HuggingFace (requires download)
+    - Do NOT import packages not pre-installed in the Docker image
+
+    ### Available pre-installed packages:
+    torch, torchvision, torchaudio, numpy, scipy, sklearn, matplotlib, seaborn,
+    pandas, tqdm, gymnasium, networkx, PyYAML, Pillow, timm, einops, torchmetrics,
+    h5py, transformers, datasets, accelerate, peft, bitsandbytes.
+
+    If your research topic requires a dataset NOT in the pre-cached list,
+    you MUST adapt to use one of the 6 pre-cached datasets instead.
+  network_full_guidance: |2
+
+    ## Network Access: Full
+    This experiment runs with network_policy='full'. Network access is available
+    throughout ALL execution phases (setup, pip install, and main experiment).
+    You may download datasets, install packages, and make HTTP requests at any time.
+  hp_reporting: |2
+
+    ## Hyperparameter Reporting (MANDATORY)
+    At the TOP of main.py, define a HYPERPARAMETERS dictionary containing ALL tunable hyperparameters used in your experiment:
+    ```python
+    HYPERPARAMETERS = {
+        'learning_rate': 0.001,
+        'batch_size': 64,
+        'num_epochs': 50,
+        'hidden_dim': 256,
+        # ... all other hyperparameters
+    }
+    ```
+    At the end of main.py, save hyperparameters to results.json:
+    ```python
+    import json
+    results = {'hyperparameters': HYPERPARAMETERS, 'metrics': collected_metrics}
+    with open('results.json', 'w') as f:
+        json.dump(results, f, indent=2)
+    ```
+    EVERY hyperparameter must be used in the code — no dead parameters.
+    The paper MUST include a hyperparameter table — this data feeds into it.
+  rl_step_guidance: |2
+
+    ## RL Training Step Budget (MANDATORY for RL experiments)
+    Reinforcement learning requires MANY more training steps than supervised learning.
+    Under-trained RL agents produce random-chance performance, making ALL comparisons
+    meaningless and the paper unpublishable.
+
+    ### Environment Availability:
+    #### Always available (classic control — no extra dependencies):
+    - CartPole-v1, Pendulum-v1, MountainCar-v0, MountainCarContinuous-v0,
+      Acrobot-v1, LunarLander-v3
+    - These are lightweight and fast — PREFER these unless MuJoCo is specifically required.
+
+    #### MuJoCo environments (pre-installed in Docker image):
+    - HalfCheetah-v5, Hopper-v5, Walker2d-v5, Ant-v5, Humanoid-v5,
+      Swimmer-v5, Reacher-v5, InvertedPendulum-v5, InvertedDoublePendulum-v5
+    - Require MuJoCo runtime — available in Docker but NOT in basic sandbox mode.
+
+    #### RULE: If the research topic says 'MuJoCo-free', 'without MuJoCo',
+      or 'classic control only' → you MUST use classic control environments ONLY.
+      Do NOT import or reference MuJoCo in any way.
+
+    #### DEFAULT RECOMMENDATION: Prefer classic control environments unless the
+      research topic specifically requires MuJoCo locomotion tasks.
+
+    ### ALGORITHM-ENVIRONMENT COMPATIBILITY (HARD RULE — violation = crash):
+    - DQN is ONLY for DISCRETE action spaces (CartPole, LunarLander, Acrobot, Atari).
+      DQN will CRASH on Pendulum, HalfCheetah, Hopper, Walker2d, etc.
+    - For CONTINUOUS action spaces: use SAC, TD3, or PPO.
+    - PPO works for both discrete and continuous.
+    - NEVER combine DQN + any continuous environment.
+
+    ### TIME BUDGET RULES FOR RL:
+    - If time_budget ≤ 3600s → ONLY classic control (CartPole, Pendulum, MountainCar, Acrobot, LunarLander)
+    - If time_budget ≤ 1800s → ONLY CartPole or Pendulum (simplest)
+    - MuJoCo requires >5000s for meaningful results.
+
+    ### Minimum Steps by Algorithm Family:
+    | Algorithm | Environment | Min Steps | Recommended |
+    |-----------|-------------|-----------|-------------|
+    | PPO       | MuJoCo (Ant, HalfCheetah, Humanoid) | 500K | 1M-3M |
+    | PPO       | Simple control (CartPole, Pendulum) | 100K | 500K |
+    | SAC/TD3   | MuJoCo locomotion | 300K | 1M |
+    | SAC/TD3   | Simple control | 50K  | 200K |
+    | DQN/Rainbow | Atari | 1M | 10M |
+    | A2C/A3C   | Any continuous | 500K | 2M |
+    | REINFORCE | Any | 200K | 1M |
+
+    ### Step Budget Allocation Strategy:
+    1. Compute pilot_time = time for 1000 steps of 1 condition.
+    2. steps_per_sec = 1000 / pilot_time.
+    3. max_steps_per_condition = (time_budget * 0.7) / num_conditions * steps_per_sec.
+    4. If max_steps < min_steps for the algorithm, REDUCE num_seeds to 3 (not steps).
+    5. If STILL under min_steps, use a simpler environment (e.g., Pendulum instead of Ant).
+    6. NEVER reduce steps below the minimum — it wastes compute on meaningless results.
+
+    ### Evaluation Protocol for RL:
+    - Evaluate every N_eval steps (e.g., every 10K steps) using deterministic policy.
+    - Run 10 evaluation episodes per checkpoint.
+    - Report: mean return, std return, success rate (if applicable).
+    - Plot learning curves (return vs steps) — this is EXPECTED by reviewers.
+    - Final metric = mean over last 10 evaluation checkpoints (NOT last episode).
+
+    ### Gymnasium Environment Version (CRITICAL):
+    - Use v5 environments (NOT v4): `gym.make('HalfCheetah-v5')`, `gym.make('Hopper-v5')`
+    - v4 environments are deprecated and will produce warnings.
+    - Available MuJoCo v5 envs: HalfCheetah-v5, Hopper-v5, Walker2d-v5, Ant-v5,
+      Humanoid-v5, Swimmer-v5, Reacher-v5, InvertedPendulum-v5, InvertedDoublePendulum-v5
+    - For simple/fast experiments: use Pendulum-v1, CartPole-v1, MountainCarContinuous-v0
+
+    ### Gymnasium API (CRITICAL — common crash source):
+    - `env.reset()` returns `(obs, info)` — ALWAYS unpack both:
+      `obs, info = env.reset(seed=seed)`
+    - `env.step(action)` returns `(obs, reward, terminated, truncated, info)` — 5 values:
+      `obs, reward, terminated, truncated, info = env.step(action)`
+      `done = terminated or truncated`
+    - DO NOT use old `done = env.step(action)[2]` — this is the Gym (v0.26-) API.
+    - `reward` is a scalar float, NOT an array. Do NOT index it: use `reward` directly.
+    - `obs` shape depends on env: discrete envs give 1D array, image envs give 3D.
+      Always check `env.observation_space.shape` and handle accordingly.
+
+    ### Learning Curve Logging (MANDATORY for RL papers):
+    - Print evaluation metrics at regular intervals: every N_eval steps
+      `EVAL: step=<S> condition=<C> seed=<seed> return=<R>`
+    - This enables plotting learning curves (return vs training steps)
+    - Learning curves are EXPECTED by RL reviewers — a paper without them
+      will be rejected regardless of final performance.
+    - At the end, print the full curve:
+      `LEARNING_CURVE: condition=<C> seed=<seed> steps=[...] returns=[...]`
+  multi_seed_enforcement: |2
+
+    ## Multi-Seed Experiment Requirement (MANDATORY — NO EXCEPTIONS)
+    Running each condition with only 1 seed is NEVER acceptable. Results from
+    a single seed cannot distinguish signal from noise and reviewers will reject.
+
+    ### HARD REQUIREMENT:
+    - You MUST use exactly seeds = [0, 1, 2] (3 seeds minimum).
+    - Each condition MUST loop over ALL seeds.
+    - Print per-seed: `condition=X seed=S {metric_key}: V`
+    - Print aggregated: `condition=X {metric_key}_mean: M {metric_key}_std: S`
+    - Tables MUST show mean ± std, NEVER single-run values.
+
+    ### Implementation Pattern (copy this structure):
+    ```python
+    SEEDS = [0, 1, 2]  # EXACTLY 3 seeds — mandatory minimum
+    all_results = {}  # {condition_name: {seed: metric_value}}
+
+    for condition_name, ConditionClass in conditions.items():
+        all_results[condition_name] = {}
+        for seed in SEEDS:
+            set_all_seeds(seed)  # torch, numpy, random
+            result = run_single(ConditionClass, seed=seed)
+            all_results[condition_name][seed] = result
+            print(f'condition={condition_name} seed={seed} metric: {result}')
+        values = list(all_results[condition_name].values())
+        print(f'condition={condition_name} metric_mean: {np.mean(values):.4f} '
+              f'metric_std: {np.std(values):.4f}')
+    ```
+
+    ### Reporting Requirements:
+    - Print per-seed results: `condition=X seed=S metric: V`
+    - Print aggregated: `condition=X metric_mean: M metric_std: S`
+    - Tables in the paper MUST show mean ± std, NEVER single-run values.
+    - If time budget forces < 5 seeds, use EXACTLY 3 seeds (minimum).
+      Print: `SEED_WARNING: only 3 seeds used due to time budget`.
+  writing_structure: |2
+
+    ## Paper Section Writing Rules
+    MARKDOWN FORMATTING (CRITICAL):
+    - Use `# Title` (H1) for the paper title
+    - Use `# Abstract`, `# Introduction`, `# Method`, etc. (H1) for MAIN sections
+    - Use `## Subsection Name` (H2) for subsections WITHIN a main section
+    - NEVER use `##` for main sections — that produces wrong LaTeX heading levels
+    - Each main section (H1) MUST contain subsections (H2) when it exceeds 3 paragraphs
+    - NEVER place sub-topics (e.g., 'Knowledge Distillation for Compact Models') at the same heading level as main sections (e.g., 'Related Work')
+    - NEVER wrap the paper in ```markdown fences
+    - NEVER use raw variable names (e.g., `method_name/metric_key = 0.85`) — always use human-readable text
+
+    ABSTRACT (150-200 words, 5-sentence structure):
+    - (1) Problem and significance (2) Prior approaches and gaps
+    - (3) Your approach and novelty (4) Key results with 2-3 specific numbers
+    - (5) Implication/takeaway
+    - Do NOT list per-seed ranges (e.g., '0.71-0.73 across seeds') — use mean +/- std
+    - Do NOT repeat numbers that appear in the Results section — pick the 2-3 most impactful
+
+    INTRODUCTION (4 paragraphs, 800-1000 words, cite 8-12 references):
+    Paragraph 1: Problem motivation (why this matters). Paragraph 2: What exists and why it falls short. Paragraph 3: Your approach and key insight. Paragraph 4: Contributions (2-3 bullet points allowed here ONLY).
+
+    RELATED WORK:
+    Organize by sub-topic, not chronologically. End each paragraph with how YOUR work differs from the cited work. Cite at least 15 references, all directly relevant.
+
+    METHOD:
+    Write as flowing narrative prose (NOT bullet points). Include full algorithm description with pseudocode or step-by-step. State all hyperparameters with values and justification. Provide architecture details sufficient for reproduction.
+
+    RESULTS:
+    - Do NOT repeat the same number more than twice across the paper
+    - Each number in a table should be discussed AT MOST once in text
+    - Tables: mean +/- std with 95% CI in parentheses
+    - Bold the best result in each column
+    - Every comparison claim must cite a p-value or note multiple seeds
+    - Report the number of random seeds/runs used
+
+    FIGURES AND TABLES:
+    - Every figure MUST be referenced in the text (e.g., 'As shown in Figure 1')
+    - Every table MUST be referenced in the text (e.g., 'Table 2 summarizes')
+    - Figure captions: 1-2 descriptive sentences (not just 'Results comparison')
+    - Table captions go ABOVE the table; figure captions go BELOW the figure
+    - Axis labels must include units where applicable
+    - Use consistent font sizes across all figures
+
+    DISCUSSION (if applicable, can be merged into Results):
+    - Paragraph 1: Summarize key findings and their significance
+    - Paragraph 2: Compare with prior work — explain WHY results differ
+    - Paragraph 3: Discuss unexpected or negative results honestly
+    - Paragraph 4: Broader implications and practical applications
+
+    LIMITATIONS (3-5 points):
+    - State each limitation ONCE, here only — not scattered throughout
+    - No disclaimers like 'due to computational constraints'
+    - Include compute resources used (GPU type, training time)
+
+    CONCLUSION:
+    - Summarize findings (match actual results, no aspirational claims)
+    - 2-3 sentences of future work
+
+    PROSE QUALITY (CRITICAL — violation = desk reject):
+    - Write FLOWING ACADEMIC PARAGRAPHS, not bullet-point lists.
+    - Each paragraph must have 4-8 sentences with smooth transitions.
+    - Introduction, Related Work, and Method must each be >=3 paragraphs.
+    - FORBIDDEN: starting 3+ consecutive paragraphs with the same word.
+    - FORBIDDEN: bullet-point lists in Introduction or Related Work sections.
+    - Use varied sentence structures: mix simple, compound, and complex sentences.
+    - Connect paragraphs with transition phrases: 'Building on this insight...', 'In contrast to prior work...', 'To address this limitation...'.
+    - Each Related Work paragraph must COMPARE your approach to cited work, not merely summarize what each paper does.
+    - FORBIDDEN AI-BOILERPLATE phrases (instant credibility loss):
+      'delves into', 'it is worth noting', 'plays a crucial role',
+      'leverages the power of', 'paves the way', 'a myriad of',
+      'paradigm shift', 'groundbreaking', 'in the realm of',
+      'holistic approach', 'multifaceted', 'navigate the complexities'.
+      Replace ALL such phrases with precise, specific academic language.
+  llm_training_guidance: |2
+
+    ## LLM Fine-Tuning Guidance (when topic involves language model training)
+    AVAILABLE FRAMEWORKS (pre-installed in Docker):
+    - transformers (AutoModelForCausalLM, AutoTokenizer, Trainer)
+    - peft (LoraConfig, get_peft_model, PeftModel)
+    - trl (SFTTrainer, DPOTrainer, GRPOTrainer)
+    - datasets (load_dataset, Dataset)
+    - accelerate (Accelerator)
+    - bitsandbytes (4-bit/8-bit quantization)
+
+    GPU MEMORY GUIDELINES (RTX 6000 Ada, 49GB VRAM):
+    - Full fine-tune: <=3B parameters
+    - LoRA (16-bit): <=14B parameters
+    - QLoRA (4-bit): <=72B parameters (practical limit ~14B for training)
+    - Optimal: 7B-14B model with QLoRA (rank 16-64)
+
+    RECOMMENDED TRAINING PATTERN:
+    ```python
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from peft import LoraConfig, get_peft_model, TaskType
+    from trl import SFTTrainer, SFTConfig
+    from datasets import load_dataset
+
+    # 4-bit quantization for memory efficiency
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type='nf4',
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, quantization_config=bnb_config, device_map='auto'
+    )
+    lora_config = LoraConfig(
+        r=16, lora_alpha=32, target_modules='all-linear',
+        lora_dropout=0.05, task_type=TaskType.CAUSAL_LM,
+    )
+    model = get_peft_model(model, lora_config)
+    ```
+
+    KEY HYPERPARAMETERS:
+    - learning_rate: 1e-4 to 2e-4 (LoRA), 5e-5 to 1e-4 (full FT)
+    - lora_r: 8 (minimal) to 64 (high-capacity)
+    - lora_alpha: typically 2x lora_r
+    - batch_size: 1-4 per device (use gradient_accumulation_steps for effective batch)
+    - gradient_accumulation_steps: 4-16 (effective_batch = per_device * accum)
+    - max_seq_length: 512 (short), 1024-2048 (standard), 4096 (long)
+    - warmup_ratio: 0.03-0.1
+    - weight_decay: 0.01-0.1
+
+    DATA FORMAT (use datasets library):
+    - Instruction tuning: {'instruction': '...', 'output': '...'}
+    - Chat format: {'messages': [{'role': 'user', 'content': '...'}, ...]}
+    - DPO: {'prompt': '...', 'chosen': '...', 'rejected': '...'}
+    - Use load_dataset('json', data_files='train.json') for local data
+    - Use load_dataset('HuggingFace/dataset_name') for HF Hub datasets
+
+    EVALUATION:
+    - Use evaluate library for standard metrics
+    - Common: perplexity, ROUGE (summarization), BLEU (translation), accuracy
+    - LLM benchmarks: MMLU, ARC, HellaSwag, TruthfulQA
+    - Generate sample outputs for qualitative comparison
+
+    MODEL DOWNLOAD:
+    - Models will be downloaded from HuggingFace Hub at runtime
+    - Use 'trust_remote_code=True' for custom model architectures
+    - Cache directory: default HF cache (~/.cache/huggingface)
+    - Common models: Qwen/Qwen2.5-7B, meta-llama/Llama-3.1-8B, microsoft/Phi-4, google/gemma-2-9b
+
+    CRITICAL — NO SIMULATION:
+    - You MUST load and train a REAL model from HuggingFace Hub.
+    - NEVER simulate training with synthetic utility functions or random scores.
+    - NEVER replace model training with np.random/torch.randn mock results.
+    - A real experiment loads a model, tokenizes data, runs optimizer steps, and measures real loss/perplexity/accuracy on held-out data.
+    - If compute budget is tight, use a SMALLER model (Qwen2.5-0.5B or 1.5B) with fewer training steps rather than simulating.
+  llm_eval_guidance: |2
+
+    ## LLM Evaluation Guidance
+    STANDARD BENCHMARKS:
+    - Reasoning: MMLU, ARC-Challenge, HellaSwag, WinoGrande
+    - Math: GSM8K, MATH, MathVista
+    - Coding: HumanEval, MBPP, LiveCodeBench
+    - Safety: TruthfulQA, BBQ, CrowS-Pairs
+    - Instruction following: MT-Bench, AlpacaEval, IFEval
+    - Multimodal: MMBench, POPE, MathVista, MMMU
+
+    EVALUATION FRAMEWORKS:
+    - lm-eval-harness: Standard eval framework, run via CLI or Python API
+    - vllm: Fast inference engine for throughput-focused evaluation
+    - lighteval: HuggingFace's lightweight eval framework
+
+    EVALUATION PROTOCOL:
+    - Report on at least 3 benchmarks relevant to the task
+    - Compare with published baselines from model cards/leaderboards
+    - Report both zero-shot and few-shot results where applicable
+    - Include perplexity on held-out test set
+  academic_style_guide: |2
+
+    ## ACADEMIC WRITING STANDARDS (from NeurIPS/ICLR/ICML 2024-2025 best papers)
+
+    ### Title Standards
+    - Target 8-14 words. Median of award-winning papers: ~10 words.
+    - Preferred format: 'SystemName: Descriptive Subtitle' (35% of best papers)
+      e.g., 'AlphaEdit: Null-Space Constrained Knowledge Editing for Language Models'
+    - Alternative: Declarative statement that surprises
+      e.g., 'Not All Tokens Are What You Need for Pretraining'
+    - Give your method a memorable, catchy name (VAR, Genie, PRISM, SEDD).
+    - NEVER exceed 18 words. NEVER use 'A Novel Approach to...' or 'Investigating...'
+
+    ### Abstract Standards (PMR+ Structure, 180-220 words)
+    S1-S2: PROBLEM — State the gap. Open with a challenge or status-quo critique.
+    S3-S4: METHOD — Name your system by sentence 3. Describe the key insight.
+    S5-S6: RESULTS — At least 2-3 concrete quantitative claims:
+      - One relative improvement ('36.7% boost over baseline')
+      - One absolute benchmark score ('FID of 1.01 on ImageNet')
+    AVOID: Per-seed ranges, excessive texttt, defensive hedging.
+
+    ### Section Writing Standards
+    INTRODUCTION (800-1000 words, 4 paragraphs):
+      - Para 1: Motivation; Para 2: Gap (cite 3-5 papers); Para 3: Your approach;
+        Para 4: Contributions (bullet list of 3-4 specific contributions)
+      - MUST cite 8-12 references throughout Introduction
+
+    RELATED WORK (600-800 words):
+      - Organize by sub-topic (2-3 subsections), NOT as a flat list
+      - End each subsection with how YOUR work differs
+      - Target >= 15 unique references in this section alone
+
+    METHOD (1000-1500 words):
+      - Start with problem formulation (notation, objective function)
+      - Use algorithm environment for pseudocode (not verbatim)
+      - Write as a flowing narrative, NOT bullet points
+
+    EXPERIMENTS (800-1200 words):
+      - Experimental setup as subsection (datasets, baselines, metrics, hardware)
+      - Hyperparameter table (Table 1 always)
+      - MUST reference figures: 'As shown in Figure 1, our method...'
+      - MUST cite baseline method papers (not just name them)
+
+    RESULTS (600-800 words):
+      - Main results table with descriptive caption
+      - Ablation study table
+      - Analysis paragraphs connecting numbers to insights
+      - DO NOT repeat the same numbers from Experiments section
+      - Reference figures for visual evidence
+
+    DISCUSSION (400-600 words):
+      - Compare findings with prior work (cite papers here!)
+      - Explain surprising results; broader implications
+
+    LIMITATIONS (200-300 words): 3-5 specific, concrete limitations. ALL caveats go HERE.
+
+    CONCLUSION: Summarize in 2-3 sentences, future work in 2-3 sentences.
+
+    ### Writing Quality Rules
+    - Write as FLOWING PROSE, not bullet points or enumerated lists
+    - Each paragraph: topic sentence, evidence, analysis, transition
+    - Use transitions: 'Building on this insight...', 'In contrast to...'
+    - Academic tone: confident but precise
+    - Vary sentence structure: mix short declarative with longer analytical
+    - AVOID: Starting 3+ consecutive sentences with 'We', 'The', 'Our'
+    - AVOID: 'It is worth noting that', 'It should be mentioned that' (filler)
+    - Citations belong in EVERY section, not just Introduction and Related Work
+  narrative_writing_rules: |2
+
+    ## NARRATIVE WRITING REQUIREMENTS
+
+    You are writing a paper for human reviewers at a top AI conference. The paper
+    must read like a cohesive academic story, NOT a technical report or bullet list.
+
+    ### Structure of Each Paragraph
+    Every paragraph MUST follow this pattern:
+    1. TOPIC SENTENCE — states the main claim or finding
+    2. EVIDENCE — data, citations, or reasoning that supports the claim
+    3. ANALYSIS — what the evidence means, why it matters
+    4. TRANSITION — connects to the next paragraph's topic
+
+    ### FORBIDDEN Writing Patterns
+    - Bullet-point lists in the main body (ONLY allowed in Contributions paragraph
+      of Introduction and Limitations section)
+    - Numbered lists of findings or results
+    - Starting a paragraph with 'Table X shows...' without context first
+    - Consecutive short sentences without analysis between them
+    - Repeating the same sentence structure 3+ times in a row
+
+    ### REQUIRED Writing Patterns
+    - Transition phrases: 'Building on this observation...', 'In contrast to prior work...'
+    - Vary sentence length: alternate between short impactful and longer analytical
+    - Ground every claim in evidence: '[Result] because [mechanism] (cite)'
+    - Discuss implications: 'This X% improvement indicates that [mechanism Y]
+      is more effective than [mechanism Z] for [context]'
+    - For temporal data: describe trends in prose rather than bullet-point lists
+
+    ### Example: BAD vs GOOD Method Description
+    BAD (bullet-list style):
+      'Our method has three components:
+       - Component A
+       - Component B
+       - Component C'
+
+    GOOD (narrative style):
+      'Our method builds on the insight that [core problem] stems from
+       [root cause identified in Section 2]. To address this, we introduce
+       [MethodName], a [N]-stage framework. First, [Stage 1] maps inputs
+       to [representation]. These representations feed into [Stage 2],
+       enabling [benefit] without [drawback of prior approaches].
+       Crucially, we augment this with [Stage 3] based on [technical
+       foundation] (cite original paper), triggering [mechanism] when
+       [condition is met].'
+      NOTE: Replace all [placeholders] with YOUR actual method details.
+      Do NOT copy this template verbatim.
+  anti_hedging_rules: |2
+
+    ## ANTI-HEDGING RULES (MANDATORY)
+    1. The following phrases are BANNED from the paper body:
+       - 'we do not claim' / 'we cannot claim'
+       - 'we intentionally frame this conservatively'
+       - 'the evidence does not support' (unless followed by what it DOES support)
+       - 'only N seeds/runs' (belongs ONLY in Limitations, stated ONCE)
+       - 'this paper is not' / 'we do not' as paragraph openers
+    2. Limitations and caveats MUST be consolidated in the Limitations section.
+       They may NOT appear in Introduction, Method, Results, or Conclusion.
+    3. Confidence framing: Instead of 'we cannot prove X', write 'our results
+       provide evidence for X' or 'X is supported by [metrics]'.
+    4. If you have a negative result, frame it as an INSIGHT:
+       BAD: 'Our method failed to outperform the baseline, we do not claim...'
+       GOOD: 'Surprisingly, the standard baseline proved competitive, suggesting
+       that [insight about why] — an observation with practical implications for...'
+  anti_repetition_rules: |2
+
+    ## ANTI-REPETITION RULE
+    Each specific number (e.g., '0.7667', '36.7%') may appear in AT MOST 2 sections:
+      - Once in Results/Experiments (where it is first reported)
+      - Once in Abstract (as a summary highlight)
+    The Introduction, Discussion, and Conclusion MUST refer to results qualitatively
+    ('significantly outperformed', 'X% improvement') WITHOUT repeating exact numbers
+    from the Results section. Violation of this rule will result in desk rejection.
 stages:
-  code_generation:
-    max_tokens: 8192
-    system: You are a computational scientist who writes real, runnable experiments. Your code implements actual algorithms
-      with real mathematical operations. You NEVER fake results with random number generators. Always use the ```filename:xxx.py
-      format for each file. Use numpy for numerical computation. Keep code self-contained and deterministic.
-    user: "Generate a Python experiment project for the following research topic:\nTOPIC: {topic}\n\nCRITICAL REQUIREMENTS\
-      \ — your code MUST satisfy ALL of these:\n1. Implement REAL algorithms (e.g., gradient descent, Adam, SGD, etc.)\n \
-      \  using numpy arrays — NOT random.uniform() loops that fake results.\n2. Define REAL objective/loss functions (e.g.,\
-      \ Rosenbrock, quadratic,\n   cross-entropy on synthetic data) with proper mathematical formulas.\n3. Run REAL optimization\
-      \ loops that compute gradients and update parameters.\n4. Collect REAL metrics (loss values, convergence rates) from\
-      \ the optimization.\n5. The code must be scientifically meaningful — a reviewer should see\n   actual algorithm implementations,\
-      \ not random number generators.\n\nOUTPUT FORMAT — return multiple files using this exact format:\n```filename:main.py\n\
-      # entry point code\n```\n\n```filename:optimizers.py\n# optimizer implementations\n```\n\nCODE STRUCTURE:\n- main.py:\
-      \ entry point that runs experiments and prints metrics\n- Additional modules for algorithms, objective functions, utilities\n\
-      - Primary metric key: {metric}\n- main.py must print metric lines as `name: value` (one per line)\n- main.py must ALSO\
-      \ write a `results.json` file with structured experiment results\n  (e.g. per-algorithm, per-function, per-dimension metrics\
-      \ as nested dicts/lists)\n- Use deterministic seeds (numpy.random.seed or random.seed)\n- No external data files, no\
-      \ network calls, no GPU required\n- FORBIDDEN: subprocess, os.system, eval, exec, shutil, socket\n- MUST implement convergence\
-      \ stopping criteria (e.g. stop when objective change < 1e-8 for\n  N consecutive iterations) — do NOT just run a fixed\
-      \ number of iterations\n{pkg_hint}\nANTI-PATTERNS (do NOT do these):\n- Do NOT generate random numbers and pretend they\
-      \ are experiment results\n- Do NOT use `random.uniform()` to simulate a decreasing loss curve\n- Do NOT hardcode metric\
-      \ values or use trivial arithmetic as metrics\n- Do NOT run a fixed number of iterations without any convergence check\n- Do NOT implement convergence_rate or similar metrics as dummy return values\n  (e.g. returning 1.0 or a constant) — measure actual iterations to convergence\n- If you report convergence_rate, define it as iterations_to_convergence / max_iterations\n  or similar — it MUST differ between algorithms\n\nNUMPY 2.x COMPATIBILITY (CRITICAL):\n- np.trapz is REMOVED → use np.trapezoid\n- np.erfinv does NOT exist → use scipy.special.erfinv\n- np.bool, np.int, np.float, np.complex are REMOVED → use Python builtins\n- np.str, np.object are REMOVED → use str, object\n- np.math is REMOVED → use math module\n\nExperiment plan:\n{exp_plan}"
-  experiment_design:
-    system: You are a principal investigator designing ML experiments.
-    user: '{preamble}
+  topic_init:
+    system: |-
+      You are a rigorous research planner who identifies NOVEL, TIMELY research angles. You follow recent trends from top venues in the relevant domain and propose research that advances the frontier rather than repeating known results.
 
-
-      Design an experiment plan as YAML.
-
-      Required keys: objectives,datasets,baselines,proposed_methods,ablations,metrics,risks,compute_budget.
-
-      Hypotheses:
-
-      {hypotheses}'
-  export_publish:
-    max_tokens: 16384
-    system: You are a publication formatting editor.
-    user: 'Format revised paper into clean final markdown for publication export.
-
-      Preserve content quality and readability.
-
-      Input paper:
-
-      {revised}'
-  hypothesis_gen:
-    system: You formulate testable scientific hypotheses.
-    user: 'Generate at least 2 falsifiable hypotheses from synthesis.
-
-      Output markdown and for each hypothesis provide rationale, measurable prediction, failure condition.
-
-      Synthesis:
-
-      {synthesis}'
-  knowledge_archive:
-    system: You produce reproducibility-focused research retrospectives.
-    user: '{preamble}
-
-
-      Write retrospective archive markdown with lessons, reproducibility notes, and future work.
-
-      Decision:
-
-      {decision}
-
-
-      Analysis:
-
-      {analysis}
-
-
-      Revised paper:
-
-      {revised}'
-  knowledge_extract:
-    json_mode: true
-    system: You extract high-signal evidence cards from papers.
-    user: 'Extract structured knowledge cards from shortlist.
-
-      Return JSON: {cards:[{card_id,title,cite_key,problem,method,data,metrics,findings,limitations,citation}]}.
-
-      IMPORTANT: If the input contains cite_key fields, preserve them exactly in the output.
-
-      Shortlist:
-
-      {shortlist}'
-  literature_collect:
-    json_mode: true
-    system: You are a literature mining assistant.
-    user: 'Generate candidate papers from the search plan.
-
-      Return JSON: {candidates:[...]} with >=20 rows.
-
-      Each candidate must include id,title,source,url,year,abstract,collected_at.
-
+      NOVELTY PRINCIPLES:
+      - A good research angle addresses a GAP not yet covered by existing work.
+      - Avoid pure benchmark/comparison studies unless the methodology is novel.
+      - Prefer angles that combine existing techniques in new ways, apply methods to underexplored domains, or challenge common assumptions.
+      - The research must be FEASIBLE with limited compute (single GPU, hours not days).
+      - Check: would a reviewer say 'this is already well-known'? If so, find a sharper angle.
+    user: |-
+      Create a SMART research goal in markdown.
       Topic: {topic}
-
-      Search plan:
-
-      {plan_text}'
-  literature_screen:
-    json_mode: true
-    system: You are a strict domain-aware reviewer. Reject off-topic papers aggressively.
-    user: 'Perform merged relevance+quality screening and return shortlist.
-
-      Return JSON: {shortlist:[...]} each with title, cite_key (if present), relevance_score (0-1), quality_score (0-1), keep_reason.
-
-      Preserve all original fields (paper_id, doi, arxiv_id, cite_key, etc.) from the input.
-
-      Topic: {topic}
-
       Domains: {domains}
+      Project: {project_name}
+      Quality threshold: {quality_threshold}
 
-      Threshold: {quality_threshold}
+      Required sections:
+      - **Topic**: The broad area
+      - **Novel Angle**: What specific aspect has NOT been well-studied? Why is this timely? What recent development creates an opportunity? How does this differ from standard approaches?
+      - **Scope**: Focused enough for a single paper
+      - **SMART Goal**: Specific, Measurable, Achievable, Relevant, Time-bound
+      - **Constraints**: Compute budget, available tools, data access
+      - **Success Criteria**: What results would make this publishable?
+      - **Generated**: Timestamp
 
-      IMPORTANT: Only keep papers genuinely relevant to the topic above. Reject papers about unrelated domains even if they
-      are high quality.
+      IMPORTANT: The 'Novel Angle' section must convincingly argue why this specific research direction is NOT already covered by existing work. If the topic is well-studied (e.g., 'comparing optimizers'), you MUST find a specific unexplored aspect (e.g., 'under distribution shift with noisy gradients', 'in the few-shot regime', 'with modern architectures').
 
-      Candidates JSONL:
-
-      {candidates_text}'
-  paper_draft:
-    max_tokens: 32768
-    system: "You are a top-tier ML paper author writing for NeurIPS/ICML/ICLR.\n\n\
-      KEY PRINCIPLES (from accepted paper analyses):\n\
-      1. NOVELTY: A good paper has 1-2 key ideas and keeps the rest simple. Think sushi, not curry.\n\
-      2. NARRATIVE: The paper is a short, rigorous, evidence-based technical story with a takeaway readers care about.\n\
-      3. FIGURE 1: The most important figure. It should convey whatever is most important — many readers go straight to Figure 1.\n\
-      4. STRONG BASELINES: Invest real effort in making baselines competitive. Reviewers catch weak baselines.\n\
-      5. ABLATIONS: Remove one component at a time and measure the effect. Without ablations, reviewers cannot tell which parts matter.\n\
-      6. HONESTY: Acknowledge limitations explicitly. Papers that don't are substantially weaker.\n\
-      7. CONTRIBUTIONS: State contributions clearly in Abstract AND Introduction. Many reviewers stop reading carefully after the intro.\n\
-      8. REPRODUCIBILITY: Include all details needed to reproduce: hyperparameters, data processing, random seeds, hardware specs.\n\n\
-      COMMON REJECTION REASONS (avoid these):\n\
-      - Overclaiming: match claims to evidence\n\
-      - Missing ablations: systematically demonstrate each component's contribution\n\
-      - Weak baselines: tune baselines with the same effort as your method\n\
-      - Poor reproducibility: include every detail needed to replicate\n\n\
-      You ONLY use real experimental data — never fabricate or approximate numbers. Every metric value must exactly match the provided experiment output.\n\
-      You write at the depth and length expected for a 9-page conference paper (approximately 5000-6500 words in the main body, excluding references)."
-    user: '{preamble}
-
-
-      Write a FULL-LENGTH paper draft section by section in markdown. This paper must be suitable for submission to a top-tier ML conference (NeurIPS, ICML, ICLR).
-
-      CRITICAL LENGTH REQUIREMENTS — each section MUST meet its minimum word count:
-
-      1. **Title**: Concise, informative (10-15 words)
-      2. **Abstract** (150-250 words): Problem, method, key results with numbers, conclusion
-      3. **Introduction** (800-1000 words): Motivation with real-world context, problem statement, research gap analysis, brief method overview, contribution list (3-4 bullet points), paper organization
-      4. **Related Work** (600-800 words): Organized by 3-4 thematic groups, each with 4-5 citations. Compare and contrast approaches, identify limitations of prior work, position this work clearly
-      5. **Method** (1000-1500 words): Formal problem definition with mathematical notation, detailed algorithm description with equations, complexity analysis, design rationale for key choices
-      6. **Experiments** (800-1200 words): Detailed experimental setup (datasets, preprocessing, data splits), baselines and their implementations, hyperparameter settings (in a table), evaluation metrics with justification, hardware and runtime information
-      7. **Results** (600-800 words): Main results table(s) with ALL metrics, per-condition analysis, statistical significance discussion, ablation studies, qualitative analysis where relevant
-      8. **Discussion** (400-600 words): Interpretation of key findings, unexpected results analysis, comparison with prior work, practical implications
-      9. **Limitations** (200-300 words): Honest assessment of scope, dataset, methodology, and generalizability limitations
-      10. **Conclusion** (200-300 words): Summary of contributions, main findings, and concrete future work directions
-
-      TOTAL TARGET: 5000-6500 words in the main body. If any section is shorter than its minimum, EXPAND it with substantive technical content — NOT filler.
-
-      QUALITY STANDARDS:
-      - Use formal academic language throughout
-      - Include mathematical notation where appropriate (use LaTeX-style $...$ for inline math)
-      - Every claim must be supported by either a citation or experimental evidence
-      - Results tables should use markdown table format with proper column headers
-      - Provide algorithm pseudocode in the Method section when applicable
-
-      Required sections: Title, Abstract, Introduction, Related Work, Method, Experiments, Results, Discussion, Limitations, Conclusion.
-      Do NOT include a References section — it will be auto-generated.
-
-      {topic_constraint}{exp_metrics_instruction}{citation_instruction}Outline:
-
-      {outline}'
-  paper_outline:
-    max_tokens: 8192
-    system: You are an academic writing planner.
-    user: '{preamble}
-
-
-      Create a detailed paper outline in markdown.
-
-      Include per-section goals and evidence links.
-
-      {topic_constraint}{feedback}Analysis:
-
-      {analysis}
-
-
-      Decision:
-
-      {decision}'
-  paper_revision:
-    max_tokens: 32768
-    system: You are a paper revision expert for NeurIPS/ICML/ICLR submissions. When revising, NEVER shorten existing sections — only expand, improve, and add content. The final paper must be at least as long as the draft.
-    user: 'Revise the paper draft to address all review comments.
-
-      CRITICAL: Maintain or INCREASE the paper length. Each section must meet its minimum word count:
-      Abstract (150-250), Introduction (800-1000), Related Work (600-800), Method (1000-1500),
-      Experiments (800-1200), Results (600-800), Discussion (400-600), Limitations (200-300), Conclusion (200-300).
-
-      Return revised markdown only.
-
-      {topic_constraint}Draft:
-
-      {draft}
-
-
-      Reviews:
-
-      {reviews}'
-  peer_review:
-    max_tokens: 8192
-    system: You are a balanced conference reviewer who is rigorous about
-      methodology-evidence consistency.
-    user: 'Simulate peer review from at least 2 reviewer perspectives.
-
-      Output markdown with Reviewer A and Reviewer B, each including strengths,
-      weaknesses, and actionable revisions.
-
-      Check specifically:
-
-      1. Does the paper stay on topic ({topic})? Flag any sections where the paper
-      drifts to unrelated topics or presents environment issues as contributions.
-
-      2. METHODOLOGY-EVIDENCE CONSISTENCY: Compare the paper''s claims about
-      experimental setup (number of trials, statistical tests, hyperparameters,
-      baselines) against the actual experiment evidence provided below. Flag any
-      discrepancies where the paper claims something that is NOT supported by the
-      actual code or results. For example:
-      - Paper claims N trials but code shows a different number
-      - Paper claims statistical tests (ANOVA, t-test) but code has none
-      - Paper reports metrics not present in actual results
-      - Paper describes methods not implemented in code
-
-      3. TRIAL COUNT: The actual number of experiment runs is stated in the evidence below. If the paper claims a DIFFERENT number of trials (e.g., "100 independent trials" when only 1 was run), flag this as a CRITICAL fabrication that MUST be corrected.
-
-      4. PAPER LENGTH: This paper targets NeurIPS/ICML submission (9 pages). Check that each section has adequate depth. Flag sections that are too short: Abstract (<150 words), Introduction (<700 words), Related Work (<500 words), Method (<800 words), Experiments (<600 words), Results (<500 words). A paper with fewer than 4000 total words is CRITICALLY under-length.
-
-      5. REVIEW LIKE A TOP-CONFERENCE REVIEWER:
-      - Is the contribution novel, or is it incremental over well-known work?
-      - Are baselines properly tuned and competitive?
-      - Are ablation studies present and meaningful?
-      - Is every claim supported by evidence from the experiments?
-      - Does the paper acknowledge its limitations honestly?
-      - Would you recommend this paper be presented at NeurIPS/ICML? Why or why not?
-      - Score the paper 1-10 following this rubric: 1-3 Reject (fundamental flaws), 4-5 Borderline (significant weaknesses), 6-7 Weak Accept (solid but not exciting), 8-9 Accept (strong contribution), 10 Strong Accept (exceptional).
-
-      Paper draft:
-
-      {draft}
-
-      {experiment_evidence}'
+      TREND VALIDATION (MANDATORY):
+      - Describe the research trend or gap that motivates this work. Do NOT fabricate specific paper titles or citations — actual papers will be retrieved in the literature search stage.
+      - Name the specific benchmark/dataset that will be used for evaluation.
+      - If no standard benchmark exists, explain how results will be measured.
+      - Note whether SOTA results are commonly tracked on this benchmark (do NOT state specific model names or performance numbers — these will be verified in the literature search stage).
+      - Add a 'Benchmark' subsection listing: name, source, and typical metrics — omit unverified performance numbers.
   problem_decompose:
     system: You are a senior research strategist.
-    user: 'Decompose this research problem into at least 4 prioritized sub-questions.
-
+    user: |-
+      Decompose this research problem into at least 4 prioritized sub-questions.
       Topic: {topic}
-
       Output markdown with sections: Source, Sub-questions, Priority Ranking, Risks.
-
       Goal context:
-
-      {goal_text}'
-  quality_gate:
-    json_mode: true
-    system: You are a final quality gate evaluator.
-    user: 'Evaluate revised paper quality and return JSON.
-
-      Schema: {score_1_to_10:number, verdict:string, strengths:[...], weaknesses:[...], required_actions:[...]}.
-
-      Threshold: {quality_threshold}
-
-      Paper:
-
-      {revised}'
-  research_decision:
-    system: You are a research program lead making go/no-go decisions.
-    user: 'Make a PROCEED or PIVOT decision from analysis.
-
-      Output markdown with: Decision, Justification, Evidence, Next Actions.
-
-      Analysis:
-
-      {analysis}'
-  resource_planning:
-    json_mode: true
-    system: You are an experiment scheduler.
-    user: 'Create schedule JSON with GPU/time estimates.
-
-      Schema: {tasks:[{id,name,depends_on,gpu_count,estimated_minutes,priority}], total_gpu_budget, generated}.
-
-      Experiment plan:
-
-      {exp_plan}'
-  result_analysis:
-    system: You are a quantitative ML analyst. Always cite exact numbers from the provided data.
-    user: '{preamble}
-
-
-      {data_context}
-
-
-      Analyze run metrics and produce markdown report with statistical interpretation.
-
-      Use the ACTUAL quantitative values provided above — do NOT invent numbers.
-
-      Required sections: Metrics Summary (with real values), Comparative Findings, Statistical Checks, Limitations, Conclusion.
-
-      Run context:
-
-      {context}'
+      {goal_text}
   search_strategy:
-    json_mode: true
-    system: You design literature retrieval strategies and source verification plans. You aim for COMPREHENSIVE coverage — a good research paper needs 30-60 references.
+    system: You design literature retrieval strategies and source verification plans.
     user: |-
       Create a merged search strategy package.
       Return a JSON object with keys: search_plan_yaml, sources.
@@ -415,90 +815,1035 @@ stages:
       Topic: {topic}
       Problem tree:
       {problem_tree}
+    json_mode: true
+  literature_collect:
+    system: You are a literature mining assistant.
+    user: |-
+      Generate candidate papers from the search plan.
+      Return JSON: {candidates:[...]} with >=8 rows.
+      Each candidate must include id,title,source,url,year,abstract,collected_at.
+      Topic: {topic}
+      Search plan:
+      {plan_text}
+    json_mode: true
+  literature_screen:
+    system: You are a strict domain-aware reviewer with zero tolerance for cross-domain false positives.
+      You MUST reject papers that are from unrelated fields, even if they share superficial keyword overlap.
+      A paper about 'normalization in database systems' is NOT relevant to 'normalization in deep learning'.
+      A paper about 'graph theory in social networks' is NOT relevant to 'graph neural networks for molecular
+      property prediction'.
+    user: |-
+      Perform merged relevance+quality screening and return shortlist.
+      Return JSON: {shortlist:[...]} each with title, cite_key (if present), relevance_score (0-1), quality_score (0-1), keep_reason.
+      Preserve all original fields (paper_id, doi, arxiv_id, cite_key, etc.) from the input.
+      Papers tagged year_band="foundational" predate the recent window (research.min_year): keep them only when they define the problem, a metric, or a baseline; otherwise prefer recent work.
+      Topic: {topic}
+      Domains: {domains}
+      Threshold: {quality_threshold}
+
+      SCREENING RULES (apply strictly):
+      1. DOMAIN MATCH: The paper's actual research domain must match the topic's domain. Shared keywords across domains do NOT count.
+      2. METHOD RELEVANCE: The paper must discuss methods, benchmarks, or findings directly applicable to the research topic.
+      3. CROSS-DOMAIN REJECTION: Reject papers from unrelated fields (e.g., wireless communications, database systems, social science) even if they use similar terminology.
+      4. RECENCY PREFERENCE: Prefer papers from 2020+ for methodology, but accept foundational papers (pre-2020) if they introduced key techniques still in use today.
+      5. SEMINAL PAPERS: Papers marked as source='seminal_library' are pre-vetted foundational references — keep them if their keywords match the topic (relevance_score >= 0.7).
+      6. QUALITY FLOOR: Reject papers with no abstract, no venue, and no citation count (likely not real papers).
+      Candidates JSONL:
+      {candidates_text}
+    json_mode: true
+  knowledge_extract:
+    system: You extract high-signal evidence cards from papers.
+    user: |-
+      Extract structured knowledge cards from shortlist.
+      Return JSON: {cards:[{card_id,title,cite_key,problem,method,data,metrics,findings,limitations,citation}]}.
+      IMPORTANT: If the input contains cite_key fields, preserve them exactly in the output.
+      Shortlist:
+      {shortlist}
+    json_mode: true
   synthesis:
     system: You are a synthesis specialist for literature reviews.
-    user: 'Produce merged synthesis output (topic clusters + research gaps).
-
+    user: |-
+      Produce merged synthesis output (topic clusters + research gaps).
       Output markdown with sections: Cluster Overview, Cluster 1..N, Gap 1..N, Prioritized Opportunities.
-
       Topic: {topic}
+      {domain_context}Cards context:
+      {cards_context}
+    max_tokens: 8192
+  hypothesis_gen:
+    system: |-
+      You formulate testable scientific hypotheses that address gaps NOT covered by existing literature. Your hypotheses must be:
+      1. NOVEL: Not simply replicating known results or testing obvious things.
+      2. GAP-FILLING: Address specific weaknesses or blind spots identified in the literature synthesis.
+      3. FEASIBLE: Testable within the constraints of this research domain.
+      {feasibility_constraint}4. FALSIFIABLE: Have clear failure conditions that would definitively reject the hypothesis.
+      5. SURPRISING: At least one hypothesis should challenge conventional wisdom or test a counter-intuitive prediction.
+    user: |-
+      Generate at least 2 falsifiable hypotheses from the synthesis below.
+      For each hypothesis provide:
+      - **Hypothesis statement**: A clear, testable claim
+      - **Novelty argument**: Why this has NOT been tested before, citing specific gaps from the synthesis
+      - **Rationale**: Theoretical or empirical basis for expecting this result
+      - **Measurable prediction**: Specific quantitative outcome expected
+      - **Failure condition**: What result would reject this hypothesis?
+      - **Required baselines**: What modern, state-of-the-art methods must be compared against to make the finding meaningful?
 
-      Cards context:
+      AVOID:
+      - Hypotheses that are trivially obvious
+      - Hypotheses that replicate well-known results already in the literature
+      - Hypotheses that cannot be tested within the domain's feasibility constraints
 
-      {cards_context}'
-  topic_init:
-    system: You are a rigorous research planner.
-    user: 'Create a SMART research goal in markdown.
+      {domain_context}Synthesis:
+      {synthesis}
+  experiment_design:
+    system: You are a principal investigator designing rigorous research experiments.
+    user: |-
+      {preamble}
 
-      Topic: {topic}
+      {domain_design_context}Design an experiment plan as YAML.
+      Required keys: objectives,datasets,baselines,proposed_methods,ablations,metrics,risks,compute_budget.
 
-      Domains: {domains}
+      NAMING REQUIREMENT (CRITICAL for paper quality):
+      - Every condition name in baselines, proposed_methods, and ablations MUST be a DESCRIPTIVE algorithm name DERIVED FROM THE HYPOTHESES ABOVE, NOT a generic label.
+      - WRONG: baseline_1, baseline_2, method_variant_1, method_variant_2
+      - WRONG: random_search, bayesian_optimization, ppo_policy, curiosity_driven_rl (these are generic defaults — NEVER use them unless they are actually what the hypotheses call for)
+      - RIGHT: names that reflect the specific methods/architectures/algorithms in the hypotheses (e.g., rim_agent, monolithic_gru, ewc_baseline, sleep_consolidation, no_sleep_ablation, coarse_routing, fine_routing)
+      - The name should immediately tell a reader WHAT algorithm or strategy is used.
+      - This is critical because these names appear directly in the paper.
 
-      Project: {project_name}
+      BASELINE & BENCHMARK MODERNITY (CRITICAL for acceptance):
+      - Baselines MUST be modern, widely-adopted methods from recent top-venue papers (2023-2026). Beating only outdated or weak baselines is NOT a valid contribution and will result in desk rejection.
+      - Include at LEAST one strong baseline that represents current SOTA or near-SOTA in the specific sub-area. Check recent NeurIPS/ICML/ICLR papers to identify appropriate baselines.
+      - Benchmarks MUST be standard and actively used. If a benchmark has been superseded, use the newer version.
+      - For each baseline, cite the original paper and note why it is a fair and competitive comparison.
 
-      Quality threshold: {quality_threshold}
+      HYPOTHESIS ALIGNMENT (CRITICAL — most common failure mode):
+      - Your experiment plan MUST directly test the hypotheses listed above.
+      - Each hypothesis should map to at least one comparison between conditions.
+      - Baselines must be the specific alternatives named in the hypotheses, NOT generic optimization methods like random_search or bayesian_optimization.
+      - If a hypothesis says 'X outperforms Y', then X must be a proposed_method and Y must be a baseline.
+      - Ablations must isolate the specific components claimed to matter in the hypotheses (e.g., if hypothesis claims routing helps, ablate routing).
 
-      Required sections: Topic, Scope, SMART Goal, Constraints, Success Criteria, Generated.'
+      STABILITY & REPRODUCIBILITY (CRITICAL for RL-based methods):
+      - Under `proposed_methods`, specify key hyperparameters (learning rate, gradient clip threshold, entropy coefficient, etc.).
+      - Under `risks`, explicitly list numerical stability concerns (NaN/divergence, reward explosion, policy collapse) and mitigations (gradient clipping, reward normalization, early stopping on NaN).
+      - Under `metrics`, include:
+        * Primary metric: `{metric_key}` with direction: `{metric_direction}` and units
+        * IMPORTANT: The metric direction MUST be `{metric_direction}` — do NOT use a different direction. If {metric_direction}=='minimize', lower is better. If {metric_direction}=='maximize', higher is better.
+        * `success_rate`: fraction of seeds that complete without NaN/crash
+        * At least ONE discovery-aligned endpoint (e.g., identification accuracy, time-to-discovery, final posterior mass on true hypothesis) in addition to any proxy metric
+      {dataset_guidance}
+
+      - Under `datasets`, specify AT LEAST 2 regime factors to stratify by (e.g., noise_level: [low, high], hypothesis_space_size: [small, large]). Results MUST be reported per-regime. A single-regime experiment cannot support generality claims and will be rejected by reviewers.
+      - FACTORIAL DESIGN PREFERRED: If you vary multiple factors (e.g., scale AND noise), design a factorial grid (e.g., small+low, small+high, large+low, large+high) so each factor's effect can be isolated. Bundling factors (e.g., easy=small+low, hard=large+high) is a confounder and reviewers will flag it. If computational budget limits the grid, at minimum acknowledge that factors are bundled and limit claims accordingly.
+      - Under `compute_budget`, plan for minimum 10 seeds per condition to ensure valid statistical comparisons.
+
+      STATISTICAL POWER REQUIREMENTS (CRITICAL for publishability):
+      - Use AT LEAST 5 random seeds per condition (10 preferred)
+      - Use AT LEAST 30 episodes per seed for RL methods
+      - Report: mean ± std, 95% bootstrap CI, per-seed raw values
+      - For method comparisons: use paired bootstrap or Wilcoxon signed-rank test (NOT paired t-test with n < 10)
+      - Report effect sizes (Cohen's d or rank-biserial correlation)
+      - 3 seeds is INSUFFICIENT — reviewers will reject papers with n=3
+
+      HARDWARE ENVIRONMENT (your experiments run on THIS exact machine):
+      {hardware_profile}
+      - You have exactly ONE GPU. No distributed training. No multi-GPU. No multi-node.
+      - Design experiments that fit this single GPU.
+
+      COMPUTE BUDGET CONSTRAINT (CRITICAL — experiments MUST fit time budget):
+      - Total experiment time budget: {time_budget_sec} seconds.
+      - Per-condition budget: ~{per_condition_budget_sec} seconds (= time_budget × 0.7 / 6 conditions).
+      - Pre-cached datasets (instant, no download): {available_tier1_datasets}
+      - DO NOT plan experiments requiring multiple GPUs or more than {time_budget_sec}s.
+      - HARD CONDITION LIMIT: The total number of conditions (baselines + proposed_methods + ablations) MUST NOT exceed 8 for budgets ≤ 3600s.
+        * Recommended: 2-3 baselines + 1-2 proposed methods + 2-3 ablations = 5-8 total.
+        * Generating 10+ conditions guarantees most will time out and data will be wasted.
+        * Quality over quantity: 6 well-run conditions with 5 seeds each >> 20 conditions with 1 seed each.
+      - Each run needs AT LEAST 60 seconds for RL (environment setup + training + evaluation). For deep learning with GPU, at least 120 seconds.
+      - HARD CAP: total_conditions × num_seeds × seconds_per_run MUST be < {time_budget_sec} × 0.8 (leave 20% margin for overhead).
+      - If total would exceed the budget, you MUST reduce by:
+        1. First: reduce conditions (merge similar ablations, keep strongest baselines)
+        2. Then: reduce seeds to 5 (minimum for statistical validity)
+        3. Then: reduce regimes/environments to 1
+      - Example: {time_budget_sec}s budget with 120s/condition/seed, 5 seeds → max {time_budget_sec} / (120 * 5) ≈ 4 conditions.
+
+      IMPLEMENTATION SPECIFICATION (CRITICAL for code generation):
+      For each proposed method AND each baseline, you MUST include an 'implementation_spec' key with:
+        - class_name: the Python class name for this method
+        - key_methods: list of methods the class must implement (e.g., [__init__, forward, train_step, predict])
+        - algorithm_steps: pseudocode-level description of the core algorithm (3-10 steps), e.g.:
+          1. Encode input via encoder network (MLP: input_dim -> hidden_dim)
+          2. Compute attention weights over memory buffer
+          3. Aggregate attended features with learned gate
+          4. Decode to output via decoder network
+        - loss_function: the mathematical formula for the training loss (e.g., 'L = CE(y_pred, y_true) + lambda * KL(q||p)')
+        - key_hyperparameters: dict of hyperparameter name -> default value
+        - differentiator: what makes THIS method different from others (must be an algorithmic difference, not just a hyperparameter change)
+
+      For each ablation, you MUST specify:
+        - what_is_removed: the specific component being ablated
+        - how_it_differs: concrete code-level description of the change (e.g., 'replace attention layer with mean pooling', 'set routing weight to uniform 1/N', 'remove skip connection in block 3')
+        - expected_effect: why removing this should change results
+
+      This specification is MANDATORY — without it, the code generation stage cannot produce correct implementations.
+
+      Hypotheses:
+      {hypotheses}
+  code_generation:
+    system: You are a computational scientist who writes real, runnable experiments. Your code implements
+      actual algorithms with real mathematical operations. You NEVER fake results with random number generators.
+      Always use the ```filename:xxx.py format for each file. Use numpy for numerical computation. Keep
+      code self-contained and deterministic.
+    user: "Generate a Python experiment project for the following research topic:\nTOPIC: {topic}\n\n\
+      CRITICAL REQUIREMENTS — your code MUST satisfy ALL of these:\n1. Implement the ACTUAL experiment\
+      \ described in the topic and plan below.\n   If the topic is about simulation (e.g., multi-agent\
+      \ systems, network dynamics),\n   write simulation code. If about optimization, write optimization\
+      \ code.\n   Match the code to the topic — do NOT default to generic gradient descent.\n2. Use proper\
+      \ mathematical models appropriate to the research question.\n   Examples: agent-based simulation,\
+      \ graph algorithms, statistical analysis,\n   optimization, Monte Carlo methods — whatever fits\
+      \ the topic.\n3. Run REAL computational experiments with meaningful parameters.\n4. Collect REAL\
+      \ metrics that directly answer the research question.\n5. The code must be scientifically meaningful\
+      \ — a reviewer should see\n   actual implementations relevant to the TOPIC, not a generic optimizer.\n\
+      \nOUTPUT FORMAT — return multiple files using this exact format:\n```filename:main.py\n# entry point\
+      \ code\n```\n\n```filename:models.py\n# model/algorithm implementations\n```\n\nOnly create additional\
+      \ files (optimizers.py, data_utils.py, etc.) if they contain substantial logic (>20 lines). Do NOT\
+      \ create stub files with only imports or pass statements.\n\nCODE STRUCTURE:\n- main.py: entry point\
+      \ that runs experiments and prints metrics\n- main.py MUST begin with a docstring specifying:\n\
+      \  (a) Dataset used and how it is loaded\n  (b) Distribution shift / corruption definition (if applicable)\n\
+      \  (c) Model architecture (layers, dimensions, activation)\n  (d) Training protocol (optimizer,\
+      \ epochs, batch size, LR schedule)\n  (e) Evaluation protocol (train/test split, metrics computed)\n\
+      - Additional modules for algorithms, objective functions, utilities\n- Primary metric key: {metric}\n\
+      - main.py must print metric lines as `name: value` (one per line)\n- Use deterministic seeds (numpy.random.seed\
+      \ or random.seed)\n- No external data files, no network calls, no GPU required\n- FORBIDDEN: subprocess,\
+      \ os.system, eval, exec, shutil, socket\n{pkg_hint}\nANTI-PATTERNS (do NOT do these):\n- Do NOT\
+      \ generate random numbers and pretend they are experiment results\n- Do NOT use `random.uniform()`\
+      \ to simulate a decreasing loss curve\n- Do NOT hardcode metric values or use trivial arithmetic\
+      \ as metrics\n\nMULTI-CONDITION REQUIREMENT (CRITICAL):\nThe experiment plan below specifies multiple\
+      \ conditions, treatments, or strategies to compare. Your code MUST:\n1. Implement ALL conditions/treatments\
+      \ listed in the experiment plan — not just one baseline.\n2. Run each condition independently with\
+      \ the same controlled setup (same seeds, same initialization, same budget).\n   IMPORTANT: All conditions\
+      \ MUST be iterated INSIDE main.py using a for-loop or dispatch table. NEVER use argparse --condition\
+      \ or any CLI argument to select a condition. The harness calls `python main.py` with NO arguments\
+      \ — if you add a required --condition arg it will crash.\n3. Print metrics with condition labels:\
+      \ `condition=<name> {metric}: <value>` for EACH condition.\n4. After all conditions, print a summary\
+      \ comparison line: `SUMMARY: condition1=<val>, condition2=<val>, ...`\n5. If the plan has N conditions,\
+      \ the output MUST contain N separate labeled metric streams. Running only one condition is NOT acceptable.\n\
+      6. BREADTH-FIRST ORDERING: Run ONE representative configuration per condition FIRST (e.g., default\
+      \ parameters), so that ALL conditions produce at least one result. Only AFTER all conditions have\
+      \ results, run additional parameter sweeps if time remains. This prevents the time budget from being\
+      \ exhausted on condition 1's parameter sweep while conditions 2..N never execute.\n7. CONDITION\
+      \ COMPLETENESS: After code generation, mentally verify that EVERY condition in the experiment plan\
+      \ below has a corresponding code path. If the plan lists conditions A, B, C, D — your code must\
+      \ handle all four, not just A, B, C. Missing conditions invalidate the experiment.\n8. CRASH RESILIENCE:\
+      \ Wrap each condition's execution in a try/except block so that if one condition crashes (e.g.,\
+      \ NaN, timeout, config error), the remaining conditions still execute. Print `CONDITION_FAILED:\
+      \ <name> <error>` on failure and continue to the next condition. A partial result set is far more\
+      \ valuable than a complete crash.\n9. CONDITION REGISTRY VALIDATION: At startup (before running\
+      \ experiments), enumerate all condition names and verify each has a valid code path. Print `REGISTERED_CONDITIONS:\
+      \ <name1>, <name2>, ...` at the top of output. If any condition is unrecognized, print `MISSING_CONDITION:\
+      \ <name>` and skip it gracefully rather than raising an exception.\n10. TOTAL CONDITIONS LIMIT (HARD\
+      \ RULE): Your code MUST NOT register more than 8 total conditions. If the experiment plan lists\
+      \ ablations with many parameter values (e.g., 'test decay rates 0.9, 0.99, 0.995, 0.999, 0.9999'),\
+      \ pick the 2-3 most informative values — do NOT create a separate condition for each value. 8 conditions\
+      \ × 3 seeds × budget ÷ conditions = tight timing. Quality of each condition matters more than quantity.\n\
+      \nMETRIC DEFINITION REQUIREMENT (CRITICAL):\n- At the top of main.py, include a docstring or comment\
+      \ block that defines:\n  * METRIC NAME: the exact key printed as `{metric}: <value>`\n  * DIRECTION:\
+      \ {metric_direction_hint}\n  * UNITS/SCALE: what the number represents (e.g., MSE in log scale,\
+      \ accuracy 0-1, discovery rate per episode)\n  * FORMULA: how the metric is computed from raw experiment\
+      \ outputs\n  * AGGREGATION: how per-step/per-episode values are reduced to a scalar\n- Print this\
+      \ definition at runtime: `METRIC_DEF: {metric} | direction=<higher/lower> | desc=<one-line description>`\n\
+      - Without this definition, the metric is UNINTERPRETABLE and the paper cannot make any claims about\
+      \ which method is better.\n\nSTATISTICAL RIGOR REQUIREMENT:\n- Run each condition with at least\
+      \ 5 different random seeds (10+ preferred if time budget allows). Minimum 3 seeds is MANDATORY.\n\
+      - Print per-seed results: `condition=<name> seed=<s> {metric}: <value>`\n- Print mean and std across\
+      \ seeds: `condition=<name> {metric}_mean: <val> {metric}_std: <val>`\n- If time budget is tight,\
+      \ reduce per-seed iterations rather than reducing seed count. Minimum 3 seeds is non-negotiable.\n\
+      - SEED COUNT IS FIXED AT 3 MINIMUM. Do NOT compute seed count dynamically.\n  Hardcode `SEEDS =\
+      \ [0, 1, 2]`. If 3 seeds × all conditions exceeds the time budget, REDUCE the number of conditions\
+      \ or training epochs — NEVER reduce seeds.\n  Print: `SEED_COUNT: 3 (fixed minimum, budget={time_budget}s,\
+      \ conditions=N)`.\n- Report bootstrap 95% confidence intervals when n >= 5.\n\nFAILURE-AWARE REPORTING\
+      \ (CRITICAL for RL/unstable methods):\n- Track how many seeds succeed vs fail (NaN, divergence,\
+      \ crash) per condition. Print: `condition=<name> success_rate: <succeeded>/<total>`\n- Compute UNCONDITIONAL\
+      \ metrics: treat failed seeds as worst-case (e.g., metric=0 or metric=worst_baseline). Print: `condition=<name>\
+      \ unconditional_{metric}_mean: <val>`\n- This prevents survivorship bias where a method looks good\
+      \ only because failed runs are excluded.\n- For RL methods, add STABILITY SAFEGUARDS in the code:\n\
+      \  * Gradient clipping (max norm 1.0)\n  * Reward normalization/clipping to [-10, 10]\n  * NaN checks\
+      \ on loss/gradients with graceful early stop (not crash)\n  * Learning rate warmup or conservative\
+      \ initial learning rate\n  These safeguards should PREVENT most NaN/divergence, not just catch them\
+      \ after the fact.\n\nPYTORCH RL IMPLEMENTATION BUGS (CRITICAL — these cause 100% crash rate):\n\
+      - 'Trying to backward through the graph a second time' is the #1 crash.\n  CAUSE: reusing a computed\
+      \ tensor across multiple backward() calls.\n  FIX: Always .detach() values used in the next iteration:\n\
+      \  ```\n  # WRONG:\n  old_log_prob = policy.log_prob(action)  # still attached to graph\n  # ...\
+      \ later in update loop:\n  ratio = new_log_prob / old_log_prob  # backward crashes\n  \n  # CORRECT:\n\
+      \  old_log_prob = policy.log_prob(action).detach()  # detach!\n  # ... later in update loop:\n \
+      \ ratio = new_log_prob / old_log_prob.detach()  # safe\n  ```\n- For PPO: old_log_probs MUST be\
+      \ .detach()ed when stored for later ratio computation.\n- For value functions: target values MUST\
+      \ be .detach()ed (don't backprop through targets).\n- For curiosity/intrinsic reward: prediction\
+      \ errors used as reward MUST be .detach()ed.\n- General rule: any tensor from a PREVIOUS forward\
+      \ pass that is used in the CURRENT loss computation MUST be .detach()ed.\n- When in doubt, add .detach()\
+      \ — it never causes crashes, but missing it always does.\n\nNEURAL NETWORK DIMENSION CONSISTENCY\
+      \ (CRITICAL — #2 crash cause):\n- 'input and weight.T shapes cannot be multiplied' means obs_dim\
+      \ != network input_dim.\n- When the environment observation size VARIES across regimes (e.g., easy=6,\
+      \ hard=8), the neural network's input layer MUST match EACH regime's obs_dim.\n- FIX: Create the\
+      \ network INSIDE the per-regime loop, or parameterize input_dim:\n  ```\n  # WRONG: fixed input_dim\
+      \ for all regimes\n  policy = PolicyNet(input_dim=10)  # breaks if obs_dim != 10\n  for regime in\
+      \ regimes:\n      obs = env.reset()  # obs.shape may vary!\n  \n  # CORRECT: dynamic input_dim per\
+      \ regime\n  for regime in regimes:\n      obs = env.reset()\n      obs_dim = obs.shape[-1]  # or\
+      \ len(obs)\n      policy = PolicyNet(input_dim=obs_dim)  # fresh network per regime\n  ```\n- ALWAYS\
+      \ initialize neural networks AFTER knowing the observation dimension.\n\nKNOWLEDGE DISTILLATION\
+      \ (KD) STABILITY (if applicable):\n- Teacher network MUST be frozen: `teacher.eval()` and `for p\
+      \ in teacher.parameters(): p.requires_grad = False`\n- Temperature parameter T: typical range 1-20.\
+      \ Use T=4 as default. NEVER use T<1 (causes sharp distributions → NaN gradients).\n- Loss balance:\
+      \ `loss = alpha * kd_loss + (1-alpha) * task_loss` — set alpha=0.5-0.9. If kd_loss scale >> task_loss,\
+      \ val_loss becomes NaN.\n- PROJECTION LAYERS: If teacher and student have different intermediate\
+      \ dimensions (e.g., teacher_dim=768, student_dim=256), you MUST add `nn.Linear(student_dim, teacher_dim)`\
+      \ to align features before computing distillation loss. Without projection layers, tensor shape\
+      \ mismatch WILL crash.\n- Common KD NaN causes: (1) no temperature scaling on logits, (2) missing\
+      \ gradient clipping, (3) learning rate too high (use ≤1e-3), (4) teacher not frozen → unstable targets.\n\
+      \nPAIRED STATISTICAL ANALYSIS (CRITICAL for publishable results):\n- Use the SAME random seeds across\
+      \ all conditions so results are paired.\n- After collecting per-seed results for all conditions,\
+      \ compute paired differences: for each seed s, diff(s) = method(s) - baseline(s).\n- Print paired\
+      \ analysis: `PAIRED: <method> vs <baseline> mean_diff=<val> std_diff=<val> t_stat=<val> p_value=<val>`\n\
+      - Also print bootstrap 95% CI of the paired difference.\n- This is FAR more powerful than independent\
+      \ comparisons because it controls for seed-to-seed variance.\n\nMULTI-REGIME REQUIREMENT (CRITICAL\
+      \ for generality claims):\n- The experiment MUST test at least 2 different difficulty/noise regimes\
+      \ (e.g., low noise vs high noise, small hypothesis space vs large).\n- Report results per-regime,\
+      \ not just aggregated across regimes.\n- Print regime labels: `condition=<name> regime=<regime_name>\
+      \ {metric}: <value>`\n- This prevents conclusions that only hold in one setting from being presented\
+      \ as general findings.\n\nDIMENSION CONSISTENCY CHECK (CRITICAL for RL/neural methods):\n- Before\
+      \ passing observations/states to neural networks or policy parameters, VERIFY that dimensions match.\
+      \ Common bug: environment state has dimension D1 but network expects D2.\n- At the start of each\
+      \ condition, print the state/observation dimension and the network input dimension. If they mismatch,\
+      \ reshape or adjust the network before proceeding.\n- Test EVERY condition with a single dry-run\
+      \ step before the full loop to catch shape mismatches early.\n\nTIME-TO-EVENT METRIC BUG PREVENTION\
+      \ (CRITICAL — common silent bug):\n- If the primary metric is a 'time-to-X' measure (e.g., time-to-discovery,\
+      \ steps-to-convergence, episodes-to-threshold), you MUST check the success criterion at EVERY step\
+      \ inside the loop, not only at the end.\n- WRONG pattern (produces degenerate ceiling data):\n \
+      \ ```\n  for t in range(horizon):\n      obs, r, done, info = env.step(a)\n  success = check(info)\
+      \  # only checked ONCE at end\n  time_to_X = horizon if not success else t + 1  # t+1 = horizon\
+      \ always!\n  ```\n- CORRECT pattern (captures actual first-success time):\n  ```\n  time_to_X =\
+      \ horizon  # default: never succeeded\n  for t in range(horizon):\n      obs, r, done, info = env.step(a)\n\
+      \      if check(info) and time_to_X == horizon:  # first success\n          time_to_X = t + 1\n\
+      \      if done: break\n  ```\n- This bug causes ALL methods to return the same ceiling value, making\
+      \ the entire experiment useless. Every method looks identical at the cap.\n- APPLY THIS TO ALL CONDITIONS:\
+      \ RandomSearch, BO, RL — every single condition must check at every step. If even one condition\
+      \ uses the wrong pattern, the comparison is invalid.\n\nMETRIC DISCRIMINATION VALIDATION (CRITICAL):\n\
+      - After running all conditions, check if all conditions produce the SAME mean metric value. If they\
+      \ do, the metric is NOT discriminative and the experiment is scientifically useless.\n- Common causes:\
+      \ ceiling/floor effects, too-easy or too-hard tasks, time-to-event bug above, metric that doesn't\
+      \ capture real differences.\n- If all conditions have identical means, print `WARNING: DEGENERATE_METRICS\
+      \ all conditions have same mean=<val>` and you MUST take corrective action:\n  (a) If all means\
+      \ = 1.0 or max: increase task difficulty (reduce budget, increase noise, enlarge hypothesis space)\n\
+      \  (b) If all means = 0.0: decrease difficulty\n  (c) Re-run after adjustment and verify means now\
+      \ differ\n  (d) If adjustments don't help, switch to a different primary metric\n- A degenerate\
+      \ experiment CANNOT produce a publishable paper. Fix it.\n\nDIFFICULTY CALIBRATION (CRITICAL for\
+      \ meaningful results):\n- After running a pilot (3-5 seeds, 2 conditions: random_search + one RL),\
+      \ check BOTH success rate AND metric discrimination.\n- TWO things must be true for the experiment\
+      \ to be informative:\n  1. Success rate between 30-80% (not too hard, not too easy)\n  2. Primary\
+      \ metric varies across conditions (not all methods score the same)\n- CEILING DETECTION (CRITICAL):\
+      \ If primary_metric is 1.0 (or max possible) for ALL pilot seeds in ALL pilot conditions, the task\
+      \ is TRIVIALLY EASY. You MUST increase difficulty until the metric varies. Options:\n  * Reduce\
+      \ experiment budget/horizon (fewer steps to find solution)\n  * Increase hypothesis space size\n\
+      \  * Increase observation noise\n  * Tighten the success criterion (e.g., require closer match)\n\
+      \  * Reduce the number of allowed experiments per episode\n- FLOOR DETECTION: If primary_metric\
+      \ is 0.0 for all conditions, task is too hard. Reduce noise, enlarge budget, simplify.\n- Print\
+      \ `CALIBRATION: regime=<name> pilot_success_rate=<val> pilot_primary_metric_std=<val>` after calibration.\n\
+      - If std=0, the metric is NOT discriminative — adjust until std > 0.\n- Run a calibration loop:\
+      \ pilot → check → adjust → re-pilot (max 3 iterations).\n\nALGORITHM IMPLEMENTATION INTEGRITY (CRITICAL\
+      \ — mismatch = academic fraud):\n1. If you name a method 'Bayesian Optimization', you MUST implement:\n\
+      \   - A surrogate model (e.g., Gaussian Process or random forest)\n   - An acquisition function\
+      \ (e.g., Expected Improvement, UCB)\n   - Surrogate model updates after each observation\n   DO\
+      \ NOT implement UCB1 bandit and call it 'Bayesian Optimization'.\n2. If you name a method 'PPO',\
+      \ you MUST implement:\n   - A clipped surrogate objective: min(r_t * A_t, clip(r_t, 1-eps, 1+eps)\
+      \ * A_t)\n   - A learned value function baseline\n   - The clip_eps parameter MUST be used in the\
+      \ policy update\n   DO NOT implement vanilla REINFORCE and call it 'PPO'.\n3. Every declared hyperparameter\
+      \ MUST be used in the algorithm:\n   - If you declare clip_eps, it must appear in the loss computation\n\
+      \   - If you declare entropy_coef, it must be added to the policy loss\n   - Dead parameters (declared\
+      \ but never used) are strictly forbidden\n4. Ablation conditions MUST produce different behavior:\n\
+      \   - Two conditions that differ only in a parameter that is never read are IDENTICAL\n   - Verify:\
+      \ if two conditions produce identical outputs on the same seed, the ablation is broken and MUST\
+      \ be fixed\n   ABLATION DESIGN PATTERN (CRITICAL — #1 cause of broken ablations):\n   - 'no_key_component':\
+      \ Must REMOVE a core algorithmic component (e.g., disable the graph structure by zeroing the adjacency,\
+      \ or remove the contrastive loss, or disable the RL policy and use random actions). The removal\
+      \ MUST change the forward() / step() computation.\n   - 'reduced_capacity': Must REDUCE model capacity\
+      \ by at least 2x (e.g., halve hidden dimensions, reduce layers, shrink embedding size). This MUST\
+      \ create a new model with different architecture, NOT just rename a parameter with the same value.\n\
+      \   - SELF-TEST: After implementing ablations, add a startup check that runs one forward pass per\
+      \ condition on the SAME input and asserts outputs differ. Print: `ABLATION_CHECK: <name1> vs <name2>\
+      \ outputs_differ=True`.\n   - If outputs are identical, the ablation is BROKEN — do not proceed.\n\
+      \nCODE IMPLEMENTATION DEPTH (CRITICAL — shallow code = reject):\n- Each algorithm/method MUST be\
+      \ a separate Python class with genuine logic.\n- Each class MUST have at least: __init__(), and\
+      \ one core method (forward/predict/train_step/step) with non-trivial implementation.\n- The core\
+      \ method of the MAIN proposed method MUST be at least 20 lines of effective code (excluding comments,\
+      \ blanks, imports).\n- FORBIDDEN patterns that will be detected and rejected:\n  * `class MethodB(MethodA):\
+      \ pass` — empty subclass\n  * Two classes with identical method bodies but different names\n  *\
+      \ nn.Linear/nn.Conv2d created inside forward() instead of __init__()\n  * Variables defined only\
+      \ inside an if-branch but used after the branch\n  * Using np.erf() (doesn't exist — use scipy.special.erf\
+      \ or math.erf)\n  * Using ndarray.ptp() (removed in NumPy 2.0 — use np.ptp(arr) or arr.max()-arr.min())\n\
+      \  * Using np.bool, np.int, np.float, np.complex (removed in NumPy 2.0 — use np.bool_, np.int64,\
+      \ etc.)\n  * Replacing real model training with synthetic utility functions or random scores\n \
+      \ * Using dict[key] without ensuring key exists — use dict.get(key, default) or verify key is in\
+      \ dict before access\n- If the experiment plan includes 'implementation_spec', you MUST follow the\
+      \ pseudocode steps exactly. Each algorithm_step should correspond to 1-3 lines of code in the class.\n\
+      - Ablation variants MUST modify the forward() or step() logic, not just change a hyperparameter\
+      \ value.\n\nMINIMUM SEED COUNT (CRITICAL — 3 seeds = unpublishable):\n- Use AT LEAST 5 random seeds\
+      \ per condition (10 preferred if time permits)\n- Use AT LEAST 30 episodes per seed for RL methods\n\
+      - When computing bootstrap CIs, use at least 1000 bootstrap samples\n- For method comparisons: use\
+      \ paired bootstrap or Wilcoxon signed-rank test\n- Report effect sizes (Cohen's d) alongside p-values\n\
+      \nExperiment plan:\n{exp_plan}"
+    max_tokens: 8192
+  resource_planning:
+    system: You are an experiment scheduler.
+    user: |-
+      Create schedule JSON with GPU/time estimates.
+      Schema: {tasks:[{id,name,depends_on,gpu_count,estimated_minutes,priority}], total_gpu_budget, generated}.
+      Experiment plan:
+      {exp_plan}
+    json_mode: true
+  result_analysis:
+    system: You are a quantitative research analyst. Always cite exact numbers from the provided data.
+    user: |-
+      {preamble}
+
+      {data_context}
+
+      Analyze run metrics and produce markdown report with statistical interpretation.
+      Use the ACTUAL quantitative values provided above — do NOT invent numbers.
+
+      SANITY CHECKS (perform BEFORE interpreting results):
+      1. MONOTONICITY: If a condition scales a parameter (e.g., N agents, model size), check whether metrics move in the expected direction. If accuracy *decreases* when adding more agents under majority voting, flag this as a likely implementation bug (vote parsing, normalization, or aggregation issue).
+      2. BASELINE PLAUSIBILITY: Random-chance baselines should match theoretical expectations (e.g., 1/K for K-class classification).
+      3. CROSS-CONDITION CONSISTENCY: Results across datasets or conditions should be internally coherent — wildly different patterns may indicate confounds or bugs.
+      4. REPLICATION: If results are from a single seed (n=1), explicitly note that no statistical significance claims can be made.
+      5. ABLATION ISOLATION: Compare per-seed values across conditions. If two conditions produce IDENTICAL values for the same seed, this is a RED FLAG — the ablation/variant may not have actually changed the code path (e.g., config not applied, caching, shared state). Flag this explicitly and recommend a config/registry audit.
+      6. METRIC DEFINITION CHECK: Look for a `METRIC_DEF:` line in the output. If absent, flag that the primary metric is UNDEFINED — direction, units, and formula are unknown, making all comparisons uninterpretable. This is a critical methodology gap.
+      7. CONDITION COMPLETENESS CHECK: Look for `REGISTERED_CONDITIONS:` in the output. Compare against the experiment plan. If conditions are missing or failed (look for `CONDITION_FAILED:`), list them explicitly and assess whether the remaining conditions can still answer the research question.
+      8. DEGENERATE METRICS CHECK: If ALL conditions (or all but one) produce the SAME mean primary metric value, flag this as DEGENERATE — the metric is NOT discriminative. Common causes: (a) time-to-event metric that only checks success at the final step (returns horizon for all methods), (b) ceiling/floor effects from too-easy or too-hard tasks, (c) metric capped at a budget value. This makes the experiment scientifically useless — recommend REFINE with a note to fix the metric computation or task difficulty. Look for `WARNING: DEGENERATE_METRICS` in stdout. Even if not printed, check the numbers yourself.
+
+      Required sections: Metrics Summary (with real values), Consensus Findings (high confidence), Contested Points (with evidence-based resolution), Statistical Checks, Methodology Audit, Limitations, Conclusion.
+      In the Conclusion, include:
+      - Result quality rating (1-10)
+      - Key findings (3-5)
+      - Methodology gaps to address next
+      - Recommendation: PROCEED / REFINE / PIVOT
+
+      Run context:
+      {context}
+    max_tokens: 8192
+  research_decision:
+    system: You are a research program lead making go/no-go decisions.
+    user: |-
+      Based on the analysis, make one of three decisions:
+      - **PROCEED** — results are sufficient, move to paper writing
+      - **PIVOT** — hypotheses are fundamentally flawed, generate new ones
+      - **REFINE** — hypotheses are sound but experiments need re-tuning
+
+      MINIMUM QUALITY CRITERIA for PROCEED (ALL must be met):
+      1. At least 2 baselines AND the proposed method have results
+      2. The primary metric is defined (direction, units known)
+      3. Each condition has results from ≥3 seeds
+      4. No identical per-seed values across different conditions (ablation integrity)
+      5. The analysis quality rating is ≥4/10
+      If ANY criterion is not met, you MUST choose REFINE (not PROCEED).
+
+      Output markdown with sections:
+      ## Decision
+      State exactly one of: PROCEED, PIVOT, or REFINE
+
+      ## Justification
+      Why this decision is warranted based on evidence.
+
+      ## Evidence
+      Key data points supporting the decision.
+
+      ## Next Actions
+      Concrete steps for the chosen path.
+
+      Analysis:
+      {analysis}
+  paper_outline:
+    system: You are an academic writing planner for top-tier research venues.{venue_guidance}
+    user: |-
+      {preamble}
+
+      {academic_style_guide}
+
+      Create a detailed paper outline in markdown.
+      Include per-section goals, word count targets, and evidence links.
+      The outline MUST include a catchy method name (2-5 chars) for the paper title.
+      Propose 3 candidate titles following the 'MethodName: Subtitle' format (each <= 14 words). Rate each on memorability (1-5), specificity (1-5), and novelty signal (1-5).
+      {topic_constraint}{feedback}Analysis:
+      {analysis}
+
+      Decision:
+      {decision}
+    max_tokens: 8192
+  paper_draft:
+    system: |-
+      You are a top-tier academic paper author writing for leading venues.{venue_guidance}
+
+      KEY PRINCIPLES (from accepted paper analyses):
+      1. NOVELTY: A good paper has 1-2 key ideas and keeps the rest simple.
+      2. NARRATIVE: A short, rigorous, evidence-based technical story with a takeaway.
+      3. STRONG BASELINES: Invest real effort in making baselines competitive.
+      4. ABLATIONS: Remove one component at a time and measure the effect.
+      5. HONESTY: Acknowledge limitations explicitly.
+      6. REPRODUCIBILITY: Include all details needed to reproduce results.
+
+      EVIDENCE-BOUNDING RULES (CRITICAL — violation = reject):
+      7. EVERY claim in the title, abstract, and conclusion MUST be directly supported by specific experimental metrics provided below.
+      8. If the experiment only covers partial conditions, the title MUST NOT make global causal claims. Use 'Toward...', 'Investigating...', or 'An Empirical Study of...' instead of 'X Dominates Y'.
+      9. BEFORE writing the title, list the conditions actually tested and their metric values. The title must only claim what those numbers show.
+      10. If a metric is a single scalar without condition labels, do NOT claim comparative results between strategies/methods.
+      11. Distinguish between 'we propose and validate' (has full results) vs 'we propose and present preliminary evidence' (partial results).
+
+      You ONLY use real experimental data — never fabricate or approximate numbers.
+
+      METHOD SECTION REQUIREMENTS:
+      12. The Method section MUST include ALL implementation details needed for reproduction: algorithm pseudocode or step-by-step description, hyperparameters (learning rate, clipping, discount factor, etc.), state/observation representation, reward definition, and baseline configurations.
+      13. For learning-based methods: specify model architecture, training procedure (iterations, epochs, batch handling), and any stability mechanisms (regularization, normalization).
+      14. For baselines: specify the exact algorithm/method configuration and any tuning performed to make baselines competitive.
+
+      FAILURE-AWARE REPORTING REQUIREMENTS:
+      15. If any method has a success rate < 100%, the Results section MUST report success rates per method and explain inclusion/exclusion criteria.
+      16. Report BOTH conditional metrics (successful runs only) AND unconditional metrics (treating failures as worst-case). Without both, comparative claims are biased by survivorship.
+      17. The Limitations section MUST discuss stability/reliability if any method showed NaN/divergence/crashes.
+
+      BENCHMARK & ENVIRONMENT SPECIFICATION:
+      18. The Experiments section MUST fully specify the evaluation environment: state/observation space, action space, hypothesis space, noise model, episode length, and any randomization procedures.
+      19. Report results PER REGIME (e.g., per noise level, per problem size) with separate tables or sub-sections. Aggregated-only results cannot support claims about robustness or generality.
+      20. Include a table comparing all methods across all regimes with paired statistical tests (bootstrap CI of paired differences, or paired t-test p-values). Without this, comparative claims lack statistical grounding.
+
+      METHOD NAMING RULES:
+      21. NEVER use generic labels like 'baseline_1', 'method_variant_1', 'method_variant_2' in the paper. Use descriptive algorithm/method names that reflect what the method actually does. Generic labels make the paper scientifically uninterpretable.
+      22. Each method MUST have a full description: architecture, training procedure, key hyperparameters, and implementation details. A reader should be able to reimplement every method from the paper alone.
+
+      STATISTICAL REPORTING (MANDATORY for acceptance):
+      23. EVERY result table MUST include 95% confidence intervals (mean +/- CI or [low, high]).
+      24. EVERY comparison claim ('A outperforms B') MUST cite p-value. If p >= 0.05, write: 'The difference is not statistically significant.'
+      25. If the proposed method does NOT statistically significantly outperform a baseline, do NOT claim superiority. Reframe as 'comparable', 'competitive', or 'negative result'.
+
+      WRITING STYLE RULES:
+      26. DO NOT repeat disclaimers like 'due to computational constraints, this analysis was not conducted' more than once. State each limitation ONCE in the Limitations section.
+      27. The Limitations section should be concise (200-400 words) listing 3-5 key limitations. Do NOT scatter limitation disclaimers throughout every section.
+      28. Focus 80% of the paper on WHAT YOU DID and WHAT YOU FOUND, not on what you could not do. Positive scientific contribution should dominate the paper.
+      29. Cite 25-40 unique references in the paper body. The Related Work section alone should cite at least 15 references. Cite only directly relevant work — do NOT pad with tangentially related papers.
+      30. CITE ORIGINAL PAPERS: When discussing a technique (e.g., Batch Normalization, ResNet, Adam, PPO), ALWAYS cite the original paper that introduced it. Do NOT cite a survey or follow-up instead of the original. The available references list includes foundational papers — use them.
+      31. BASELINE MODERNITY: When discussing baselines and comparisons, ensure the paper acknowledges whether the baselines represent current practice. If baselines are older methods, explicitly discuss why they were chosen and acknowledge stronger modern alternatives exist.
+    user: |-
+      {preamble}
+
+      {academic_style_guide}
+      {narrative_writing_rules}
+      {anti_hedging_rules}
+      {anti_repetition_rules}
+      Write a full paper draft section by section in markdown.
+      Required sections: Title, Abstract, Introduction, Related Work, Method, Experiments, Results, Discussion, Limitations, Broader Impact, Conclusion, References.
+      The Broader Impact section (2-3 paragraphs) MUST discuss: (1) potential positive societal impacts of this work, (2) potential negative societal impacts or risks, (3) ethical considerations specific to this research area. This section is MANDATORY for top ML venues and recommended for all research papers.
+      {writing_structure}
+      {topic_constraint}{exp_metrics_instruction}{citation_instruction}All experimental results MUST be presented in LaTeX tables or inline prose. Raw metric path formats like 'method/env/step/metric: value' are FORBIDDEN in the paper text. Convert all data to clean, formatted presentation.
+      The paper MUST fit within 10 pages (excluding references and appendix). Aim for 8-9 pages of main content. Be concise.
+      FIGURE RULES: When referencing figures, use ONLY \ref{fig:label} cross-references. NEVER add bold standalone paragraphs like '**Figure 1.**' after figure environments. Do NOT add \clearpage before or after figures/tables unless absolutely necessary.
+      TABLE RULES: Tables MUST use standard LaTeX tabular syntax with bare braces: \begin{tabular}{lcc}, NOT \begin{tabular}\{lcc\}. NEVER use '--' as placeholder values in table cells. If a metric is unavailable, write 'N/A' or omit the row entirely.
+      Outline:
+      {outline}
+    max_tokens: 16384
+  peer_review:
+    system: You are a balanced conference reviewer.
+    user: |-
+      Simulate peer review from at least 3 reviewer perspectives.
+      Output markdown with Reviewer A (methodology expert), Reviewer B (domain expert), and Reviewer C (statistics/rigor expert), each including strengths, weaknesses, and actionable revisions.
+
+      Check specifically:
+      1. TOPIC ALIGNMENT: Does the paper stay on topic ({topic})? Flag any sections where the paper drifts to unrelated topics or presents environment issues as contributions.
+      2. CLAIM-EVIDENCE ALIGNMENT: For EACH claim in the title, abstract, and conclusion, verify there is a specific metric/table/figure in the Results section supporting it. Flag unsupported claims.
+      3. STATISTICAL VALIDITY: Are confidence intervals or error bars reported? Is n>1 (multiple seeds)? Are significance tests appropriate?
+      4. COMPLETENESS: Does the paper have all required sections with sufficient depth? A NeurIPS paper body should be 5,000-6,500 words.
+      5. REPRODUCIBILITY: Are hyperparameters, random seeds, compute resources, and dataset details fully specified?
+      6. WRITING QUALITY: Is the paper written in flowing prose or bullet lists? Flag any bullet-point lists in Method/Results/Discussion. Check for excessive hedging ('we do not claim'). Verify title is <= 14 words.
+      7. FIGURES: Does the paper include at least 2 figures? Zero figures = desk reject.
+      8. CITATION DISTRIBUTION: Are citations only in Intro/Related Work? Method, Experiments, and Discussion MUST also cite relevant papers.
+
+      Paper draft:
+      {draft}
+
+      Experiment evidence for verification:
+      {experiment_evidence}
+    max_tokens: 8192
+  paper_revision:
+    system: |
+      You are a paper revision expert.
+
+      TITLE AND ABSTRACT ALIGNMENT (CRITICAL):
+      - After reviewing experimental evidence, UPDATE the title if results do not support the original claim.
+      - If the proposed method does NOT beat baselines, use a title like 'An Empirical Study of...', 'When X Falls Short: ...', or 'Investigating ... : Negative Results and Insights'.
+      - Rewrite the abstract to accurately reflect what was FOUND, not what was hoped. The abstract must match actual numbers.
+      - The conclusion MUST match actual results — no aspirational claims.
+
+      IMPORTANT WRITING RULES:
+      - Do NOT add disclaimers like 'due to computational constraints' or 'this analysis was not conducted'. If a limitation exists, mention it ONCE in the Limitations section only.
+      - Focus 80% of the paper on what was DONE and what was FOUND.
+      - Do NOT add hedging language that was not in the original draft.
+      - Keep Limitations to 200-400 words with 3-5 concise points.
+      - Ensure every comparison claim cites a p-value or states that the difference is not statistically significant.
+    user: |-
+      {academic_style_guide}
+      {narrative_writing_rules}
+      {anti_hedging_rules}
+      {anti_repetition_rules}
+      Revise the paper draft to address all review comments.
+      Return revised markdown only.
+
+      CRITICAL REVISION RULES:
+      - Transform any remaining bullet-point lists in the body into flowing prose paragraphs. The only allowed lists are in the Introduction's contribution paragraph and the Limitations section.
+      - The title MUST be <= 14 words with a catchy method name.
+      - MANDATORY: The revised paper MUST contain at least 2 markdown image references
+        (![Caption](charts/...)). If the draft has zero figures, ADD them in the Results
+        section using the chart files. A paper with zero figures will be desk-rejected.
+      - Consolidate ALL hedging/caveats into Limitations section only.
+      - The final paper body MUST be <= 6,500 words (standard 9-page conference limit).
+        If the current draft exceeds this, compress by removing redundant restatements.
+      - If the paper exceeds 10 pages, aggressively cut redundant content, merge similar sections, and tighten prose. Target 8-9 pages of main content.
+      - Do NOT add '**Figure N.**' bold paragraphs after figure environments — use only \ref{fig:label} cross-references. Do NOT add \clearpage before figures or tables.
+      - NEVER use '--' placeholder values in tables. Replace with actual values or 'N/A'.
+      - CITATION FORMAT (CRITICAL): All citations MUST remain in [cite_key] bracket format exactly as they appear in the draft, e.g. [smith2024transformer]. Do NOT convert them to author-year format like [Smith et al., 2024] or (Smith et al., 2024). The downstream LaTeX converter relies on the [cite_key] format to generate \cite{{}} commands. Changing the format will break all references in the final PDF.
+      - CITATION KEYS (CRITICAL): Do NOT invent or add new citation keys that are not already present in the draft. If you want to reference additional prior work, describe it in prose WITHOUT a citation bracket. Every [cite_key] you write MUST already exist in the bibliography. Adding hallucinated keys like [smith2020method] creates broken [?] references in the final PDF.
+      {writing_structure}
+      {topic_constraint}Draft:
+      {draft}
+
+      Reviews:
+      {reviews}
+    max_tokens: 16384
+  quality_gate:
+    system: You are a final quality gate evaluator.
+    user: |-
+      Evaluate revised paper quality and return JSON.
+      Schema: {score_1_to_10:number, verdict:string, strengths:[...], weaknesses:[...], required_actions:[...]}.
+      Threshold: {quality_threshold}
+      Paper:
+      {revised}
+    json_mode: true
+  knowledge_archive:
+    system: You produce reproducibility-focused research retrospectives.
+    user: |-
+      {preamble}
+
+      Write retrospective archive markdown with lessons, reproducibility notes, and future work.
+      Decision:
+      {decision}
+
+      Analysis:
+      {analysis}
+
+      Revised paper:
+      {revised}
+    max_tokens: 8192
+  export_publish:
+    system: You are a publication formatting editor.
+    user: |-
+      Format revised paper into clean final markdown for publication export.
+      Preserve content quality and readability.
+      CITATION FORMAT (CRITICAL): All citations MUST remain in [cite_key] bracket format, e.g. [smith2024transformer]. Do NOT convert to author-year format like [Smith et al., 2024]. The [cite_key] format is required for downstream LaTeX \cite{{}} generation.
+      Input paper:
+      {revised}
+    max_tokens: 16384
 sub_prompts:
+  hypothesis_synthesize:
+    system: You are a senior research director synthesizing multiple perspectives into a decisive research
+      proposal. The best synthesis is not a compromise but takes the strongest elements from each viewpoint.
+      Preserve genuine disagreements — do not flatten controversy.
+    user: |-
+      Below are hypotheses generated from three different research perspectives.
+      Synthesize them into a final set of 2-4 hypotheses that:
+      1. Take the strongest, most novel ideas
+      2. Address critical concerns raised by the contrarian
+      3. Ensure feasibility (pragmatist's input)
+      4. Note unresolved disagreements between perspectives
+      5. For each final hypothesis: rationale, measurable prediction, failure condition
+
+      {perspectives}
+  analysis_synthesize:
+    system: You are a senior research director synthesizing multiple analytical perspectives into a comprehensive
+      assessment. Find the truth — if the skeptic or methodologist raise valid concerns, acknowledge them.
+      Do not suppress criticism.
+    user: |-
+      Below are analyses from three different perspectives (optimist, skeptic, methodologist).
+      Produce a unified analysis that:
+      1. Identifies consensus points (high-confidence conclusions)
+      2. Resolves conflicts with evidence-based judgment
+      3. Rates result quality (1-10 with justification)
+      4. Lists 3-5 key findings
+      5. Notes methodology gaps that need addressing
+      6. Gives a clear PROCEED/PIVOT/REFINE recommendation
+
+      Required sections: Metrics Summary, Consensus Findings, Contested Points, Statistical Checks, Methodology Audit, Limitations, Conclusion.
+
+      {perspectives}
+    max_tokens: 8192
+  tournament_rank:
+    system: You score and rank competing research artifacts, distinct from the authors. Score each candidate
+      1-10 on novelty, feasibility, and rigor, then pick the SINGLE best. Be decisive and critical — do
+      not average or hedge.
+    user: |-
+      Below are {n} candidate research artifacts. Score and rank them, then choose the best.
+      Return ONLY JSON (no prose, no markdown fences):
+      {"rankings": [{"id": <int>, "score": <1-10>, "reason": <str>}], "winner": <int>}
+
+      {candidates}
+  debate_rebuttal:
+    system: You are participating in a structured research debate as the {role} perspective. You have
+      seen the other perspectives. Push back on their weak points, defend or REVISE your own position
+      with evidence, and concede where they are right. Be rigorous, not stubborn.
+    user: |-
+      Your previous position ({role}):
+      {own_position}
+
+      Other perspectives this round:
+      {others}
+
+      Write your rebuttal and updated position.
   code_repair:
     system: You fix Python code validation errors while preserving functionality.
-    user: 'The file `{fname}` in the experiment project has validation errors. Fix ALL issues and return ONLY the corrected
-      file.
-
+    user: |-
+      The file `{fname}` in the experiment project has validation errors. Fix ALL issues and return ONLY the corrected file.
 
       ## Validation Issues in {fname}
-
       {issues_text}
 
-
       ## All Project Files
-
       {all_files_ctx}
 
-
       IMPORTANT: Do NOT use subprocess, os.system, eval, exec, or any network/shell calls.
-
-      Return ONLY the corrected code for `{fname}`.'
+      NUMPY 2.x: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, np.bool/int/float→Python builtins.
+      Return ONLY the corrected code for `{fname}`.
   iterative_improve:
-    max_tokens: 8192
-    system: You improve experiment projects and return valid executable Python code. Use ```filename:xxx.py format for each
-      file.
-    user: 'Improve the experiment code based on prior run results.
-
+    system: You improve experiment projects and return valid executable Python code. Use ```filename:xxx.py
+      format for each file.
+    user: |-
+      Improve the experiment code based on prior run results.
       Return the improved files using ```filename:xxx.py format for each file.
-
       Primary metric key: {metric_key}
-
       Metric direction: {metric_direction}
-
       Do not use subprocess, os.system, eval, exec, or any network/shell calls.
+      NUMPY 2.x: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, np.bool/int/float→Python builtins, np.math→math.
+
+      EXPERIMENT PLAN ANCHOR (CRITICAL — read before making changes):
+      The research topic is: {topic}
+      {exp_plan_anchor}RULES FOR REFINEMENT:
+      - NEVER rename, remove, or replace existing condition names. The condition names in the code MUST match the experiment plan.
+      - NEVER add new conditions that are not in the experiment plan.
+      - ONLY improve the IMPLEMENTATION of existing conditions (fix bugs, tune hyperparameters, improve training loops).
+      - If the code has fundamental issues (wrong algorithm, missing components), fix the implementation but keep the same condition names and class hierarchy.
+
+      {condition_coverage_hint}SEED ENFORCEMENT (MANDATORY — BUG-183):
+      - You MUST use exactly seeds = [0, 1, 2] (3 seeds minimum).
+      - Each condition MUST loop over ALL seeds.
+      - Print per-seed: condition=X seed=S {metric_key}: V
+      - Print aggregated: condition=X {metric_key}_mean: M {metric_key}_std: S
+      - If 3 seeds × all conditions exceeds the time budget, REDUCE training epochs or conditions — NEVER reduce seed count below 3.
+
+      CONDITION COUNT LIMIT (HARD RULE):
+      - MAXIMUM 8 total conditions (baselines + methods + ablations).
+      - If the previous code had >8 conditions, consolidate ablations to 2-3 values.
+
+      DOCKER MOUNT TOPOLOGY (for fixing PermissionError/path issues):
+      - WRITABLE: /workspace/ (project files), /tmp/, /workspace/data/
+      - READ-ONLY: /opt/datasets/ (pre-cached CIFAR-10/100, MNIST, etc)
+      - If you see PermissionError on /opt/datasets, do NOT call os.makedirs() there. Use root='/opt/datasets' with download=False.
+      - For new data downloads, use /workspace/data/ as root.
 
       Current project files:
-
       {files_context}
-
       Run summaries (JSON):
-
-      {run_summaries}'
+      {run_summaries}
+    max_tokens: 8192
   iterative_repair:
-    system: You fix Python code issues — both static validation errors and runtime
-      bugs (NaN, Inf, division by zero, overflow). Diagnose the ROOT CAUSE from
-      warnings and error messages. Do not add unsafe behavior.
-    user: 'Fix all issues in the experiment code and return corrected Python code
-      using ```filename:xxx.py format for each file.
+    system: You fix Python validation issues without adding unsafe behavior.
+    user: |-
+      Fix all validation issues in main.py and return corrected Python code only.
 
-      IMPORTANT: If you see NaN/Inf or RuntimeWarning about division or invalid values,
-      trace the bug to its source (e.g. division by zero, uninitialized array, missing
-      convergence check) and fix the actual code logic — do NOT just add try/except
-      to suppress the error.
-
-
-      ## Issues Found
-
+      ## Validation Issues
       {issue_text}
 
+      ## Common RL Stability Fixes (apply if NaN/divergence detected):
+      - Add gradient clipping: `torch.nn.utils.clip_grad_norm_(params, 1.0)`
+      - Lower learning rate to 1e-4 or 3e-4
+      - Add reward normalization/clipping: `reward = np.clip(reward, -10, 10)`
+      - Add NaN guard: `if torch.isnan(loss): continue`
+      - Use float32 (not float16) for RL value functions
+      - NUMPY 2.x: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, np.bool/int/float→Python builtins
 
       ## All Project Files
+      {all_files_ctx}
+  architecture_planning:
+    system: |-
+      You are a senior software architect who designs implementation blueprints for scientific experiment codebases. You produce detailed, directly-implementable specifications with pseudocode for every class method and explicit tensor shape annotations. You emphasize separation of concerns: data loading, model definition, training loop, and evaluation are distinct components. You understand ML training deeply and design for correctness: proper .detach(), consistent tensor shapes, and correct gradient flow.
 
-      {all_files_ctx}'
-version: '1.0'
+      NUMPY 2.x COMPATIBILITY (CRITICAL):
+      - np.trapz is REMOVED → use np.trapezoid
+      - np.erfinv does NOT exist → use scipy.special.erfinv
+      - np.bool, np.int, np.float, np.complex are REMOVED → use Python builtins
+      - np.str, np.object are REMOVED → use str, object
+      - np.math is REMOVED → use math module
+    user: |-
+      Create a detailed IMPLEMENTATION BLUEPRINT for an experiment codebase.
+
+      ## Research Context
+      TOPIC: {topic}
+      PRIMARY METRIC: {metric}
+
+      ## Experiment Plan
+      {exp_plan}
+
+      ## Requirements
+      1. `main.py` MUST be the entry point — runs ALL conditions sequentially.
+      2. Each condition MUST be a SEPARATE class with DISTINCT implementation.
+      3. Data loading and model definitions in separate modules.
+      4. No more than 5 Python files total.
+      5. Every class must have at least 20 lines of effective code.
+      6. Child classes MUST override at least one core method with DIFFERENT logic.
+      7. NEVER override nn.Module.train/eval with different signatures.
+      8. Design child classes as STRATEGY variants, not PARAMETER variants.
+
+      ## Blueprint Format (YAML)
+      The blueprint MUST include ALL of the following for EACH file:
+      - `generation_order`: integer (1=first to generate, higher=later)
+      - `dependencies`: list of other files this file imports from
+      - `classes` or `functions`: with pseudocode for each method
+      - For neural network classes: input/output tensor shapes
+
+      ```yaml
+      files:
+        - name: config.py
+          generation_order: 1
+          dependencies: []
+          purpose: Hyperparameter configuration
+          classes:
+            - name: Config
+              fields:
+                - lr: 0.01
+                - batch_size: 128
+                - epochs: 20
+                - hidden_dim: 128
+
+        - name: data.py
+          generation_order: 2
+          dependencies: [config.py]
+          purpose: Dataset loading and preprocessing
+          functions:
+            - name: get_dataloaders
+              signature: (config) -> (train_loader, val_loader, test_loader)
+              pseudocode: |
+                1. Load dataset from torchvision/disk
+                2. Apply standard transforms (normalize, augment)
+                3. Split train into train/val (90/10)
+                4. Return DataLoaders with config.batch_size
+
+        - name: models.py
+          generation_order: 3
+          dependencies: [config.py]
+          purpose: All model implementations
+          classes:
+            - name: BaseModel(nn.Module)
+              input_shape: [B, 3, 32, 32]
+              output_shape: [B, 10]
+              methods:
+                - name: __init__
+                  pseudocode: Define layers (conv/linear/attention)
+                - name: forward
+                  pseudocode: |
+                    1. x = self.encoder(x)  # [B,3,32,32] -> [B, hidden]
+                    2. logits = self.classifier(x)  # [B, hidden] -> [B, 10]
+                    3. return logits
+            - name: ProposedMethod(BaseModel)
+              differentiator: Uses novel component X
+              overrides: [forward]
+              methods:
+                - name: forward
+                  pseudocode: |
+                    1. x = self.encoder(x)
+                    2. x = self.novel_component(x)  # KEY DIFFERENCE
+                    3. logits = self.classifier(x)
+                    4. return logits
+                - name: compute_special_loss
+                  pseudocode: |
+                    1. Compute task loss: CE(logits, labels)
+                    2. Compute novel regularizer
+                    3. return task_loss + lambda * reg
+
+        - name: training.py
+          generation_order: 4
+          dependencies: [config.py, data.py, models.py]
+          purpose: Training loop and evaluation
+          functions:
+            - name: train_one_epoch
+              signature: (model, loader, optimizer, device) -> float
+              pseudocode: |
+                1. model.train()
+                2. For each batch: forward, loss, backward, step
+                3. Return average loss
+            - name: evaluate
+              signature: (model, loader, device) -> dict
+              pseudocode: |
+                1. model.eval() with torch.no_grad()
+                2. For each batch: forward, argmax predictions
+                3. Return {accuracy, loss}
+
+        - name: main.py
+          generation_order: 5
+          dependencies: [config.py, data.py, models.py, training.py]
+          purpose: Entry point — runs ALL conditions
+          contract:
+            prints_metric_def: true
+            prints_registered_conditions: true
+            runs_all_conditions: true
+            per_seed_reporting: true
+            time_budget_guard: true
+          functions:
+            - name: main
+              pseudocode: |
+                1. Print METRIC_DEF line
+                2. Print REGISTERED_CONDITIONS
+                3. Setup time budget guard
+                4. For each condition:
+                   a. Create model instance
+                   b. For each seed:
+                      - Set random seed
+                      - Train model
+                      - Evaluate and print per-seed metrics
+                   c. Print mean/std across seeds
+                5. Print SUMMARY comparison
+
+      verification_criteria:
+        - All condition classes have DIFFERENT forward/step implementations
+        - Input/output tensor shapes are consistent across data->model->loss
+        - Time budget guard exists in main training loop
+        - Per-seed random state isolation
+        - All .detach() calls present for values used across iterations
+
+      conditions:
+        - name: ConditionName
+          class: ClassName
+          description: What makes it different
+      ```
+
+      Output ONLY the YAML specification wrapped in ```yaml``` fences.
+      Be SPECIFIC in pseudocode — include tensor shapes, loss formulas, and algorithmic details from the experiment plan.
+      Every class must have detailed pseudocode showing HOW it differs from others, not just THAT it differs.
+    max_tokens: 8192
+  generate_single_file:
+    system: You are an expert ML engineer who writes production-quality Python code for scientific experiments.
+      You follow implementation blueprints precisely, ensuring tensor shapes match, gradients flow correctly,
+      and all imports resolve. You write complete, runnable code — never stubs or placeholders.
+    user: |-
+      Generate the Python file `{file_name}` for an ML experiment project.
+
+      ## File Specification
+      {file_spec}
+
+      ## Full Project Blueprint
+      {blueprint}
+
+      ## Already Generated Files (summaries)
+      {dependency_summaries}
+
+      ## Already Generated Files (full code of direct dependencies)
+      {dependency_code}
+
+      ## Research Topic
+      {topic}
+
+      ## Experiment Plan
+      {exp_plan}
+
+      ## Environment
+      {pkg_hint}
+
+      ## CRITICAL Rules
+      1. Follow the blueprint specification EXACTLY — implement every class and function listed for this file.
+      2. Tensor shapes MUST match the blueprint annotations.
+      3. Imports from dependency files MUST use the exact class/function names from the already-generated code.
+      4. Every method must have a REAL implementation — no `pass`, no `...`, no `raise NotImplementedError`.
+      5. NEVER use random numbers as fake metrics.
+      6. For RL code: .detach() ALL values from previous iterations before using in current loss.
+      7. For neural networks: create layers in __init__, not in forward().
+      8. METHOD RICHNESS: Every non-trivial method should be >=5 lines of real logic. If a method only calls super() or returns a constant, add the actual computation it should perform. Training methods should include proper gradient handling, metric logging, and error checks.
+      9. ABLATION DIFFERENTIATION: If this file contains ablation/variant classes, each MUST differ in actual algorithm logic — not just in parameter values or by removing a line. Ablations should clearly implement a different computational path.
+      10. NO CLI CONDITION ARGS: If this is main.py, NEVER add argparse arguments like --condition or --method. All conditions must be iterated inside main.py with a for-loop. The harness runs `python main.py` with no arguments.
+      11. NUMPY 2.x COMPATIBILITY: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, np.bool/np.int/np.float→Python builtins, np.str/np.object→str/object, np.math→math.
+
+      Output ONLY the Python code for `{file_name}` — no markdown fences, no explanations, just the code.
+    max_tokens: 8192
+  code_exec_fix:
+    system: You are a debugging expert who fixes runtime errors in Python experiment code. You preserve
+      the original experiment design and scientific methodology while fixing the specific error. You fix
+      the ROOT CAUSE, not just the symptom.
+    user: |-
+      The following experiment code crashed during execution.
+
+      ## Error Output (stderr, last 3000 chars)
+      ```
+      {stderr}
+      ```
+
+      ## Standard Output (last 50 lines)
+      ```
+      {stdout_tail}
+      ```
+
+      ## Return Code: {returncode}
+
+      ## Current Code Files
+      {files_context}
+
+      ## Instructions
+      1. Identify the ROOT CAUSE of the error.
+      2. Fix it while preserving the experiment design.
+      3. Check for similar potential issues in ALL files.
+      4. Do NOT simplify or remove experiment logic — fix the bug.
+      5. Do NOT add subprocess, os.system, eval, exec, or network calls.
+      6. COMMON BUG: If error is about `train()` missing arguments, it means a class overrode nn.Module.train() with a custom signature. Fix by renaming the custom method to `fit()` or `run_training()` and updating all callers. Never override nn.Module.train/eval with extra args.
+      7. NUMPY 2.x: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, np.bool/int/float/complex→Python builtins, np.str/object→str/object.
+
+      Output ALL files in ```filename:xxx.py``` format, including files that don't need changes.
+    max_tokens: 16384
+  code_reviewer:
+    system: 'You are a meticulous experiment code reviewer focused on scientific correctness, statistical
+      rigor, and code quality. You catch bugs that static analysis cannot: incorrect algorithm implementations,
+      missing controls, wrong metric computation, and experimental design flaws.'
+    user: |-
+      Review this experiment code for correctness and quality.
+
+      ## Research Context
+      TOPIC: {topic}
+      PRIMARY METRIC: {metric}
+
+      ## Experiment Plan
+      {exp_plan}
+
+      ## Code Files
+      {files_context}
+
+      ## Review Criteria
+      1. **CORRECTNESS**: Does the code correctly implement the experiment plan? Are algorithms implemented properly?
+      2. **COMPLETENESS**: Are all conditions/ablations implemented with DISTINCT logic? (Not just renamed copies of baseline.)
+      3. **STATISTICAL RIGOR**: Multiple seeds? Results averaged and reported with std? Paired comparisons?
+      4. **METRIC REPORTING**: Is {metric} correctly computed and printed in the required format?
+      5. **ROBUSTNESS**: Shape mismatches? Missing imports? Type errors? Division by zero? GPU/CPU device conflicts?
+      6. **CLASS DEPTH**: Each experimental condition class must have at least 20 lines of effective code with distinct logic. Classes that only override __init__ to change parameters are CRITICAL issues — they indicate the condition is not truly different.
+
+      ## Output Format (JSON)
+      ```json
+      {{
+        "verdict": "APPROVE or REVISE",
+        "score": 1-10,
+        "critical_issues": ["issue1", "issue2"],
+        "suggestions": ["suggestion1", "suggestion2"]
+      }}
+      ```
+
+      Only use verdict REVISE if there are critical issues that would cause the code to crash or produce scientifically invalid results.
+    json_mode: true
+    max_tokens: 4096
+version: '2.0'

@@ -140,6 +140,8 @@ to cite.
 
 ## 6. Limits worth knowing
 
+Full guide: `docs/LITERATURE_SEARCH.md` (flow, source keys, capacity math, cache).
+
 - **Per query per source:** `literature_search.max_results_per_query` (40).
   Stage 3 yields up to 8 queries, Stage 4 adds up to 5 broader variants, so a
   3-source run collects roughly 960–1560 candidates before dedup.
