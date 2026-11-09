@@ -415,9 +415,17 @@ def _execute_search_strategy(
 # common biomedical departments, not just the ones whose spelling contains
 # "bio"/"med": with the genealogy of a pharmacology or immunology group, a miss
 # here silently switches MEDLINE off for exactly the users who need it.
+# Short hints must match as whole words: as substrings, "med" fires on
+# "multimedia", "social media" and "remedial", and "bio" on "biometrics"
+# and "biomimetic". The longer hints below are unambiguous inside a word.
+_BIOMED_SHORT_HINTS = ("bio", "med", "nurs")
+_BIOMED_SHORT_RE = re.compile(r"(?<![a-z])(?:bio|med|nurs)(?![a-z])")
 _BIOMED_DOMAIN_HINTS = (
-    "bio",
-    "med",
+    "biolog",
+    "biomed",
+    "biochem",
+    "medic",
+    "pharma",
     "clin",
     "neuro",
     "epidem",
@@ -435,7 +443,6 @@ _BIOMED_DOMAIN_HINTS = (
     "vaccin",
     "metabol",
     "nutrition",
-    "nurs",
     "dental",
     "surg",
 )
@@ -466,7 +473,19 @@ def _sources_for_domains(
     from researchclaw.literature.search import normalise_source
 
     labels = " ".join(str(d).lower() for d in domains)
-    if any(hint in labels for hint in _BIOMED_DOMAIN_HINTS):
+    if not labels.strip():
+        # The gate is on but there is no domain to judge by. Dropping the
+        # biomedical backends on a guess is the worse failure — a biomedical
+        # run whose config omits ``research.domains`` loses PubMed and Europe
+        # PMC entirely — so keep them and say so.
+        logger.warning(
+            "[literature] pubmed_domain_gate is enabled but research.domains "
+            "is empty — keeping PubMed/Europe PMC (set domains to enable the gate)"
+        )
+        return sources
+    if _BIOMED_SHORT_RE.search(labels) or any(
+        hint in labels for hint in _BIOMED_DOMAIN_HINTS
+    ):
         return sources
     filtered = tuple(
         src for src in sources if normalise_source(src) not in _BIOMED_SOURCES
@@ -1012,6 +1031,90 @@ def _execute_literature_collect(
 # read below so a large-context model can be fed hundreds of candidates.
 
 
+# Provenance that must survive the LLM screen. The screening prompt asks the
+# model to echo rows, but models drop fields they consider decorative, and a
+# dropped ``is_preprint``/``concern``/``pub_types`` disables every evidence
+# marker in ``review.md`` and in the synthesis prompt.
+_EVIDENCE_FIELDS = (
+    "paper_id",
+    "doi",
+    "arxiv_id",
+    "url",
+    "pdf_url",
+    "year",
+    "venue",
+    "source",
+    "pmid",
+    "is_preprint",
+    "pub_types",
+    "retracted",
+    "concern",
+)
+
+
+def _row_keys(row: dict[str, Any]) -> list[str]:
+    """Identifiers a shortlist row can be matched back on."""
+    keys = []
+    for field in ("paper_id", "doi", "cite_key", "arxiv_id"):
+        value = str(row.get(field, "")).strip().lower()
+        if value:
+            keys.append(f"{field}:{value}")
+    title = str(row.get("title", "")).strip().lower()
+    if title:
+        keys.append(f"title:{title}")
+    return keys
+
+
+def _provenance_block(row: dict[str, Any]) -> dict[str, Any]:
+    """Evidence metadata a knowledge card must carry forward."""
+    block: dict[str, Any] = {}
+    for field in _EVIDENCE_FIELDS:
+        value = row.get(field)
+        if value in (None, "", [], (), False) and field != "retracted":
+            continue
+        if field == "pub_types" and isinstance(value, (list, tuple)):
+            block[field] = list(value)
+        else:
+            block[field] = value
+    return block
+
+
+def _reapply_provenance(
+    shortlist: list[dict[str, Any]], source_rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """Restore evidence metadata from the pre-screen rows onto the shortlist.
+
+    The candidate rows are the authoritative record: the model may restate a
+    title but never a ``pmid`` or a preprint flag. Rows the pre-screen dropped
+    as retracted are dropped here too, since the model is not told about them.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    for row in source_rows:
+        for key in _row_keys(row):
+            index.setdefault(key, row)
+    merged: list[dict[str, Any]] = []
+    dropped = 0
+    for row in shortlist:
+        match = None
+        for key in _row_keys(row):
+            match = index.get(key)
+            if match is not None:
+                break
+        if match is not None:
+            if match.get("retracted"):
+                dropped += 1
+                continue
+            for field in _EVIDENCE_FIELDS:
+                value = match.get(field)
+                if value not in (None, "", [], (), False) or field == "retracted":
+                    row[field] = value
+        elif row.get("retracted"):
+            dropped += 1
+            continue
+        merged.append(row)
+    return merged, dropped
+
+
 def _execute_literature_screen(
     stage_dir: Path,
     run_dir: Path,
@@ -1031,12 +1134,14 @@ def _execute_literature_screen(
         config.research.topic, config.research.domains
     )
     filtered_rows: list[dict[str, Any]] = []
+    candidates_seen = 0
     dropped_count = 0
     retracted_dropped = 0
     for raw_line in candidates_text.strip().splitlines():
         row = _safe_json_loads(raw_line, {})
         if not isinstance(row, dict):
             continue
+        candidates_seen += 1
         # Stage 4 drops retracted records, but a resumed or hand-edited run can
         # still carry them; never let one reach the shortlist.
         if row.get("retracted"):
@@ -1060,9 +1165,18 @@ def _execute_literature_screen(
             retracted_dropped,
         )
 
+    prefiltered_rows = list(filtered_rows)
     # If pre-filter dropped everything, fall back to original (safety valve)
     if not filtered_rows:
-        filtered_rows = _parse_jsonl_rows(candidates_text)
+        # Safety valve: the keyword pre-filter dropped everything. Re-read the
+        # raw rows, but keep the retraction filter — otherwise a retracted
+        # paper that the pre-filter rejected for off-topic content comes
+        # straight back and ends up in the shortlist.
+        filtered_rows = [
+            row
+            for row in _parse_jsonl_rows(candidates_text)
+            if not row.get("retracted")
+        ]
     # Sort by keyword overlap (descending) before the char cap below drops
     # anything — candidates arrive in raw search order (whichever query/
     # source happened to return them), not relevance order. Without this,
@@ -1090,7 +1204,9 @@ def _execute_literature_screen(
         json.dumps(r, ensure_ascii=False) for r in filtered_rows
     )
     # Cap total candidates text size to avoid blowing token budget
+    candidates_truncated = False
     if len(candidates_text) > screening.max_screen_chars:
+        candidates_truncated = True
         # Truncate at newline boundary to avoid cutting mid-JSON-line
         candidates_text = candidates_text[: screening.max_screen_chars].rsplit("\n", 1)[0]
         logger.info(
@@ -1174,11 +1290,16 @@ def _execute_literature_screen(
             evidence_refs=("stage-05/screen_meta.json",),
             decision="rejected_all",
         )
+    template_fallback = not shortlist
     if not shortlist:
         rows = (
             filtered_rows[:_MIN_SHORTLIST]
             if filtered_rows
-            else _parse_jsonl_rows(candidates_text)[:_MIN_SHORTLIST]
+            else [
+                row
+                for row in _parse_jsonl_rows(candidates_text)
+                if not row.get("retracted")
+            ][:_MIN_SHORTLIST]
         )
         for idx, item in enumerate(rows):
             item["relevance_score"] = round(0.75 - idx * 0.02, 3)
@@ -1208,13 +1329,44 @@ def _execute_literature_screen(
             "Stage 5: Supplemented shortlist to %d papers (minimum: %d)",
             len(shortlist), _MIN_SHORTLIST,
         )
+    # The model echoes rows, so provenance comes back from the pre-screen rows
+    # rather than from the model's memory of them.
+    shortlist, retracted_in_shortlist = _reapply_provenance(shortlist, filtered_rows)
+    if retracted_in_shortlist:
+        logger.warning(
+            "Stage 5: dropped %d retracted paper(s) that the screen kept",
+            retracted_in_shortlist,
+        )
+
     out = stage_dir / "shortlist.jsonl"
     _write_jsonl(out, shortlist)
+    # Always written: the pre-screen and the char cap are invisible otherwise,
+    # and with a 1M-context model the cap can silently discard most of the
+    # corpus while the run still looks healthy.
+    (stage_dir / "screen_meta.json").write_text(
+        json.dumps(
+            {
+                "outcome": "parsed" if shortlist and not parse_failed else "fallback",
+                "candidates_seen": candidates_seen,
+                "candidates_after_prefilter": len(prefiltered_rows),
+                "candidates_prefilter_dropped": dropped_count,
+                "candidates_retracted_dropped": retracted_dropped,
+                "candidates_truncated": candidates_truncated,
+                "chars_sent": len(candidates_text),
+                "shortlist_size": len(shortlist),
+                "shortlist_retracted_dropped": retracted_in_shortlist,
+                "parse_failed": parse_failed,
+                "template_fallback": template_fallback,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return StageResult(
         stage=Stage.LITERATURE_SCREEN,
         status=StageStatus.DONE,
-        artifacts=("shortlist.jsonl",),
-        evidence_refs=("stage-05/shortlist.jsonl",),
+        artifacts=("shortlist.jsonl", "screen_meta.json"),
+        evidence_refs=("stage-05/shortlist.jsonl", "stage-05/screen_meta.json"),
     )
 
 
@@ -1314,10 +1466,25 @@ def _execute_knowledge_extract(
                     "limitations": "Template limitation",
                     "citation": str(paper.get("url", "")),
                     "cite_key": str(paper.get("cite_key", "")),
+                    "provenance": _provenance_block(paper),
                 }
             )
+    # Provenance is attached from the shortlist row, never from the model: a
+    # card is the only evidence stage 7+ sees, and without these fields a
+    # preprint is indistinguishable from a randomised trial.
+    rows_by_key: dict[str, dict[str, Any]] = {}
+    for paper in _parse_jsonl_rows(shortlist):
+        for key in _row_keys(paper):
+            rows_by_key.setdefault(key, paper)
+
     for idx, card in enumerate(cards):
         card_id = _safe_filename(str(card.get("card_id", f"card-{idx + 1}")))
+        if not card.get("provenance"):
+            for key in _row_keys(card):
+                row = rows_by_key.get(key)
+                if row is not None:
+                    card["provenance"] = _provenance_block(row)
+                    break
         parts = [f"# {card.get('title', card_id)}", ""]
         for key in (
             "cite_key",
@@ -1330,7 +1497,17 @@ def _execute_knowledge_extract(
             "citation",
         ):
             parts.append(f"## {key.title()}")
-            parts.append(str(card.get(key, "")))
+            value = card.get(key, "")
+            # Models emit JSON null for "nothing here"; ``str(None)`` put the
+            # literal word "None" into every such card section.
+            parts.append("" if value is None else str(value))
+            parts.append("")
+        provenance = card.get("provenance")
+        if isinstance(provenance, dict) and provenance:
+            parts.append("## Provenance")
+            for field, value in provenance.items():
+                if value not in (None, "", [], (), False) or field == "retracted":
+                    parts.append(f"- {field}: {value}")
             parts.append("")
         (cards_dir / f"{card_id}.md").write_text("\n".join(parts), encoding="utf-8")
     return StageResult(

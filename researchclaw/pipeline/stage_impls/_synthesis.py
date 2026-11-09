@@ -40,10 +40,24 @@ def _execute_synthesis(
     cards_path = _read_prior_artifact(run_dir, "cards/") or ""
     cards_context = ""
     if cards_path:
-        snippets: list[str] = []
-        for path in sorted(Path(cards_path).glob("*.md"))[:24]:
-            snippets.append(path.read_text(encoding="utf-8"))
+        def _card_order(path: Path) -> tuple[int, str]:
+            """Sort card-1, card-2, … card-10 numerically.
+
+            Lexicographic order puts card-10 before card-2, so a 24-card cap
+            silently dropped the early cards of any run with >9 cards.
+            """
+            digits = "".join(ch for ch in path.stem if ch.isdigit())
+            return (int(digits) if digits else 0, path.stem)
+
+        all_cards = sorted(Path(cards_path).glob("*.md"), key=_card_order)
+        snippets = [path.read_text(encoding="utf-8") for path in all_cards[:24]]
         cards_context = "\n\n".join(snippets)
+        if len(all_cards) > 24:
+            note = (
+                f"NOTE: {len(all_cards)} evidence cards exist; the first 24 are "
+                "shown above and the rest were not passed to this call."
+            )
+            cards_context = note + "\n\n" + cards_context
 
     if llm is not None:
         _pm = prompts or PromptManager()

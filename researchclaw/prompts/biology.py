@@ -492,6 +492,60 @@ STAGES["paper_outline"] = {
 }
 
 
+# ── literature_screen ──────────────────────────────────────────────────────
+# The ML bank's screen knows nothing about evidence levels. In a biomedical
+# review the difference between a preprint, a case report and a randomised
+# trial is the review's main axis, so the rules are restated with the
+# biomedical vocabulary. Placeholders are the ML ones.
+STAGES["literature_screen"] = {
+    "system": (
+        "You are a strict reviewer for biomedical and life-sciences "
+        "literature with zero tolerance for cross-domain false positives. "
+        "A clinical study is NOT evidence about a metabolic model unless it "
+        "constrains a parameter you would actually use; a paper about "
+        "'network analysis of social contacts' is NOT about 'metabolic "
+        "network analysis'."
+    ),
+    "user": (
+        "Perform merged relevance+quality screening and return shortlist.\n"
+        "Return JSON: {shortlist:[...]} each with title, cite_key "
+        "(if present), relevance_score (0-1), quality_score (0-1), "
+        "keep_reason.\n"
+        "Preserve all original fields (paper_id, doi, arxiv_id, cite_key, "
+        "pmid, is_preprint, pub_types, concern, etc.) from the input.\n"
+        "Papers tagged year_band=\"foundational\" predate the recent "
+        "window (research.min_year): keep them only when they define the "
+        "problem, a metric, or a baseline.\n"
+        "Topic: {topic}\n"
+        "Domains: {domains}\n"
+        "Threshold: {quality_threshold}\n\n"
+        "SCREENING RULES (apply strictly):\n"
+        "1. DOMAIN MATCH: the paper must concern the same organism, "
+        "pathway, disease or measurement class as the topic, not merely "
+        "share vocabulary.\n"
+        "2. EVIDENCE LEVEL: read pub_types and is_preprint. A preprint "
+        "(bioRxiv/medRxiv/arXiv) is primary literature in biology and may be "
+        "kept, but it is unverified; a Review or Systematic Review "
+        "outweighs a single case report; a Case Report never establishes a "
+        "mechanism. Echo the level in keep_reason, do not invent it.\n"
+        "3. FLAGGED RECORDS: retracted=true or concern=true means the "
+        "paper is evidence of a problem, not evidence for the topic. Keep "
+        "it only when the review is about that failure, and always echo the "
+        "flag.\n"
+        "4. RECENCY: prefer the last five years for methodology; keep "
+        "older work when it defines an assay, a model organism strain, or a "
+        "consensus parameter.\n"
+        "5. SEMINAL PAPERS: source='seminal_library' rows are pre-vetted "
+        "references — keep them when their keywords match "
+        "(relevance_score >= 0.7).\n"
+        "6. QUALITY FLOOR: reject records with no abstract, no venue and no "
+        "citation count.\n"
+        "Candidates JSONL:\n{candidates_text}"
+    ),
+    "json_mode": True,
+}
+
+
 # ---------------------------------------------------------------------------
 # Debate roles — biology vocabulary
 # ---------------------------------------------------------------------------

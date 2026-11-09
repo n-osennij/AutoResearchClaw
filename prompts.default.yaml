@@ -835,7 +835,7 @@ stages:
     user: |-
       Perform merged relevance+quality screening and return shortlist.
       Return JSON: {shortlist:[...]} each with title, cite_key (if present), relevance_score (0-1), quality_score (0-1), keep_reason.
-      Preserve all original fields (paper_id, doi, arxiv_id, cite_key, etc.) from the input.
+      Preserve all original fields (paper_id, doi, arxiv_id, cite_key, pmid, is_preprint, pub_types, concern, etc.) from the input.
       Papers tagged year_band="foundational" predate the recent window (research.min_year): keep them only when they define the problem, a metric, or a baseline; otherwise prefer recent work.
       Topic: {topic}
       Domains: {domains}
@@ -848,6 +848,7 @@ stages:
       4. RECENCY PREFERENCE: Prefer papers from 2020+ for methodology, but accept foundational papers (pre-2020) if they introduced key techniques still in use today.
       5. SEMINAL PAPERS: Papers marked as source='seminal_library' are pre-vetted foundational references — keep them if their keywords match the topic (relevance_score >= 0.7).
       6. QUALITY FLOOR: Reject papers with no abstract, no venue, and no citation count (likely not real papers).
+      7. EVIDENCE LEVEL: Record, do not guess. Keep is_preprint=true papers when they are the primary source (bioRxiv/medRxiv/arXiv), but treat their claims as unverified. A paper with retracted=true or concern=true is citable evidence of a problem, not evidence for the topic — keep it only if the review is about that failure, and always echo the flag.
       Candidates JSONL:
       {candidates_text}
     json_mode: true
@@ -857,6 +858,7 @@ stages:
       Extract structured knowledge cards from shortlist.
       Return JSON: {cards:[{card_id,title,cite_key,problem,method,data,metrics,findings,limitations,citation}]}.
       IMPORTANT: If the input contains cite_key fields, preserve them exactly in the output.
+      Do not invent pmid, doi, year or venue: leave them out — they are copied from the source record downstream.
       Shortlist:
       {shortlist}
     json_mode: true
@@ -865,6 +867,7 @@ stages:
     user: |-
       Produce merged synthesis output (topic clusters + research gaps).
       Output markdown with sections: Cluster Overview, Cluster 1..N, Gap 1..N, Prioritized Opportunities.
+      When a finding rests only on a preprint (bioRxiv/medRxiv/arXiv), say so and label it unverified — never present it as peer-reviewed. State the evidence level (preprint, randomised trial, systematic review, cohort, in-vitro) wherever it changes how much weight a claim deserves.
       Topic: {topic}
       {domain_context}Cards context:
       {cards_context}

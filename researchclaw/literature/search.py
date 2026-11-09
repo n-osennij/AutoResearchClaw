@@ -482,7 +482,8 @@ def _carry_metadata(old: Paper, new: Paper) -> Paper:
     Citation counts come from OpenAlex/S2, retraction and MeSH knowledge only
     from the biomedical backends. Picking the winner by citations alone would
     drop the retraction flag for the exact papers where it matters most, so the
-    survivor keeps: ``retracted`` (OR), ``pmid``, ``mesh_terms``/``pub_types``
+    survivor keeps: ``retracted``/``concern`` (OR), ``pmid``,
+    ``mesh_terms``/``pub_types``
     (union), and a ``pdf_url`` the winner lacks. Preprint status needs no merge:
     ``_prefer_published`` already made a journal record win when one existed.
     """
@@ -490,6 +491,8 @@ def _carry_metadata(old: Paper, new: Paper) -> Paper:
     changes: dict[str, object] = {}
     if old.retracted and not new.retracted:
         changes["retracted"] = True
+    if old.concern and not new.concern:
+        changes["concern"] = True
     if old.pmid and not new.pmid:
         changes["pmid"] = old.pmid
     if old.mesh_terms and not set(old.mesh_terms) <= set(new.mesh_terms):
@@ -499,12 +502,6 @@ def _carry_metadata(old: Paper, new: Paper) -> Paper:
     if old.pdf_url and not new.pdf_url:
         changes["pdf_url"] = old.pdf_url
     return replace(merged, **changes) if changes else merged
-
-
-def _mark_retracted(results: list[Paper], idx: int) -> None:
-    """Flag an already-stored duplicate as retracted, in place."""
-    if not results[idx].retracted:
-        results[idx] = replace(results[idx], retracted=True)
 
 
 def _prefer_published(kept: Paper, candidate: Paper) -> bool:
@@ -558,7 +555,10 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
         if _prefer_published(kept, paper):
             result[idx] = _carry_metadata(kept, paper)
         else:
-            _mark_retracted(result, idx)
+            # The candidate loses, but its flags and identifiers still count:
+            # the discarded copy may be the only record marked retracted or
+            # carrying an expression of concern.
+            result[idx] = _carry_metadata(paper, kept)
         # Both records' identifiers now point at the survivor: a third record
         # that only carries the discarded one's arXiv id must not become a
         # second copy of the same paper.

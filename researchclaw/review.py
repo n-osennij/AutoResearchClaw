@@ -83,8 +83,13 @@ def _short(text: Any, limit: int) -> str:
 
 
 def _cell(text: Any) -> str:
-    """Escape a value for a markdown table cell."""
-    return _short(text, 200).replace("|", "\\|")
+    """Escape a value for a markdown table cell.
+
+    Backslash first: escaping the pipe first and the backslash afterwards turns
+    ``\\|`` into ``\\\\|``, which markdown renders as a literal backslash plus a
+    cell split — one cell becomes two.
+    """
+    return _short(text, 200).replace("\\", "\\\\").replace("|", "\\|")
 
 
 def _md_section(text: str, heading: str) -> str:
@@ -279,7 +284,11 @@ def _paper_kind(row: dict[str, Any]) -> str:
     if row.get("is_preprint"):
         return "preprint"
     pub_types = row.get("pub_types") or []
-    if isinstance(pub_types, list | tuple):
+    # A model that echoes the field sometimes flattens the list to one string;
+    # the isinstance check below then fell through and blanked the Type column.
+    if isinstance(pub_types, str):
+        pub_types = [pub_types]
+    if isinstance(pub_types, (list, tuple)):
         # MEDLINE lists the most specific type first ("Randomized Controlled
         # Trial" before "Journal Article"); prefer the first non-generic one.
         for value in pub_types:
@@ -336,7 +345,17 @@ def _references_section(shortlist: list[dict[str, Any]]) -> str:
         link = row.get("url") or row.get("doi") or ""
         suffix = f" <{link}>" if link else ""
         venue_part = f" *{venue}*." if venue else ""
-        lines.append(f"{idx}. {title}.{venue_part} {year}.{suffix}".rstrip())
+        # A reference list is where a reader checks the source; a retracted
+        # paper cited without a note is the one error a reviewer cannot see.
+        flags = []
+        if row.get("retracted"):
+            flags.append("RETRACTED")
+        if row.get("concern"):
+            flags.append("expression of concern")
+        if row.get("is_preprint"):
+            flags.append("preprint")
+        note = f" [{'; '.join(flags)}]" if flags else ""
+        lines.append(f"{idx}. {title}.{venue_part} {year}.{suffix}{note}".rstrip())
     lines.append("")
     return "\n".join(lines)
 

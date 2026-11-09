@@ -278,7 +278,7 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "(if present), relevance_score (0-1), quality_score (0-1), "
             "keep_reason.\n"
             "Preserve all original fields (paper_id, doi, arxiv_id, cite_key, "
-            "etc.) from the input.\n"
+            "pmid, is_preprint, pub_types, concern, etc.) from the input.\n"
             "Papers tagged year_band=\"foundational\" predate the recent "
             "window (research.min_year): keep them only when they define the "
             "problem, a metric, or a baseline; otherwise prefer recent work.\n"
@@ -301,6 +301,12 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "match the topic (relevance_score >= 0.7).\n"
             "6. QUALITY FLOOR: Reject papers with no abstract, no venue, and "
             "no citation count (likely not real papers).\n"
+            "7. EVIDENCE LEVEL: Record, do not guess. Keep is_preprint=true "
+            "papers when they are the primary source (bioRxiv/medRxiv/arXiv), "
+            "but treat their claims as unverified. A paper with "
+            "retracted=true or concern=true is citable evidence of a problem, "
+            "not evidence for the topic — keep it only if the review is about "
+            "that failure, and always echo the flag.\n"
             "Candidates JSONL:\n{candidates_text}"
         ),
         "json_mode": True,
@@ -313,6 +319,8 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "data,metrics,findings,limitations,citation}]}.\n"
             "IMPORTANT: If the input contains cite_key fields, preserve them "
             "exactly in the output.\n"
+            "Do not invent pmid, doi, year or venue: leave them out — they are "
+            "copied from the source record downstream.\n"
             "Shortlist:\n{shortlist}"
         ),
         "json_mode": True,
@@ -324,6 +332,11 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "Produce merged synthesis output (topic clusters + research gaps).\n"
             "Output markdown with sections: Cluster Overview, Cluster 1..N, "
             "Gap 1..N, Prioritized Opportunities.\n"
+            "When a finding rests only on a preprint (bioRxiv/medRxiv/arXiv), "
+            "say so and label it unverified — never present it as "
+            "peer-reviewed. State the evidence level (preprint, randomised "
+            "trial, systematic review, cohort, in-vitro) wherever it changes "
+            "how much weight a claim deserves.\n"
             "Topic: {topic}\n"
             "{domain_context}"
             "Cards context:\n{cards_context}"
