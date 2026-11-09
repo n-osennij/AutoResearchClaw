@@ -24,7 +24,7 @@ names are skipped). Keys go inline (`*_api_key`) or into the env var named by
 | `openreview` | ICLR/NeurIPS submissions with PDFs | none |
 | `crossref` | publisher metadata (ACM/IEEE/Springer/Elsevier) + DOI | none; `openalex_email` is reused as the polite contact |
 | `pubmed` | MEDLINE | `NCBI_API_KEY` optional — raises 3 → 10 req/s |
-| `europepmc` | MEDLINE **plus** bioRxiv/medRxiv/Research Square preprints, publication types (`Review`, `Randomized Controlled Trial`, `Retracted Publication`), retraction notices and full-text links; no key, no documented quota | none |
+| `europepmc` | MEDLINE **plus** bioRxiv/medRxiv/Research Square preprints, publication types (`Review`, `Randomized Controlled Trial`, `Retracted Publication`), retraction notices and full-text links | none |
 | `core` | open-access full text | `CORE_API_KEY` **required** (free at <https://core.ac.uk/services/api>) |
 
 ### How Stages 4–6 build the evidence base

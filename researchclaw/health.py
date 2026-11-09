@@ -856,13 +856,34 @@ def check_literature_sources(
     sources: tuple[str, ...] | list[str] = (),
     domains: tuple[str, ...] | list[str] = (),
 ) -> CheckResult:
-    """Warn when a biomedical topic is configured without a biomedical index.
+    """Warn when a biomedical topic is configured without a biomedical index,
+    and when a configured name matches no backend at all.
 
     ``research.domains: ["oncology"]`` with only ``openalex``/``arxiv`` is
     valid config and passes every other check, yet PubMed and Europe PMC are
     the only backends indexing MEDLINE: the run would search the topic with
     general-purpose indexes and quietly miss the clinical literature.
+
+    A misspelt name (``europepmcc``, ``semantic-scholar2``) is worse than a
+    missing one: Stage 4 logs a warning and carries on, so the run looks
+    healthy while one backend never answers. ``unknown_sources`` catches it
+    here.
     """
+    from researchclaw.literature.search import known_sources, unknown_sources
+
+    unknown = unknown_sources(sources or ())
+    if unknown:
+        known = ", ".join(known_sources())
+        return CheckResult(
+            name="literature_sources",
+            status="warn",
+            detail=(
+                f"literature_search.sources has unknown name(s): "
+                f"{', '.join(unknown)} — they are skipped at request time"
+            ),
+            fix=f"Use one of: {known}; `s2` and `europe_pmc` are aliases",
+        )
+
     biomedical_domains = [
         str(domain) for domain in (domains or ()) if _is_biomedical_domain(str(domain))
     ]

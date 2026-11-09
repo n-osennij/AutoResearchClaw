@@ -7,7 +7,12 @@ dependencies.
 """
 
 from researchclaw.literature.models import Author, Paper
-from researchclaw.literature.search import SourceKeys, search_papers
+from researchclaw.literature.search import (
+    SourceKeys,
+    known_sources,
+    search_papers,
+    unknown_sources,
+)
 from researchclaw.literature.verify import (
     CitationResult,
     VerificationReport,
@@ -23,5 +28,7 @@ __all__ = [
     "VerificationReport",
     "VerifyStatus",
     "search_papers",
+    "known_sources",
+    "unknown_sources",
     "verify_citations",
 ]

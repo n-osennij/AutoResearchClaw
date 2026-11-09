@@ -912,6 +912,31 @@ def test_check_literature_sources_passes_with_biomedical_index() -> None:
     assert result.status == "pass"
 
 
+def test_check_literature_sources_flags_unknown_names() -> None:
+    """A typo skips a backend silently: Stage 4 warns and the run looks healthy."""
+    result = health.check_literature_sources(("openalex", "europepmcc"), ())
+
+    assert result.status == "warn"
+    assert "europepmcc" in result.detail
+    assert "europepmc" in result.fix
+
+
+def test_check_literature_sources_accepts_both_aliases() -> None:
+    result = health.check_literature_sources(("s2", "europe_pmc"), ())
+
+    assert result.status == "pass"
+
+
+def test_known_sources_lists_canonical_names_only() -> None:
+    from researchclaw.literature.search import known_sources, unknown_sources
+
+    names = known_sources()
+    assert "europepmc" in names and "europe_pmc" not in names
+    assert len(names) == len(set(names))
+    assert unknown_sources(["openalex", "S2", "europe-pmc"]) == []
+    assert unknown_sources(["openalex", "nope"]) == ["nope"]
+
+
 def test_check_literature_sources_passes_for_non_biomedical_domain() -> None:
     result = health.check_literature_sources(
         ("openalex", "semantic_scholar", "arxiv"), ("computer vision", "multimedia")

@@ -2,7 +2,7 @@
 
 Combines results from the academic backends in ``_SOURCES`` — OpenAlex,
 Semantic Scholar, arXiv, OpenReview, Crossref, PubMed, Europe PMC and CORE —
-deduplicates by DOI → arXiv ID → fuzzy title match, and returns a merged
+deduplicates by DOI → arXiv ID → PMID → fuzzy title match, and returns a merged
 list sorted by citation count (descending).
 
 Source priority: OpenAlex (most generous limits) → Semantic Scholar → arXiv;
@@ -187,6 +187,25 @@ _SOURCES["europe_pmc"] = _SOURCES["europepmc"]
 def normalise_source(name: str) -> str:
     """``semantic-scholar`` / ``Semantic Scholar`` → ``semantic_scholar``."""
     return name.lower().replace("-", "_").replace(" ", "_")
+
+
+def known_sources() -> tuple[str, ...]:
+    """Canonical backend names, in the order the docs and the table list them.
+
+    Aliases (``s2``, ``europe_pmc``) are deliberately excluded: this is what a
+    caller validating user input should compare against.
+    """
+    return tuple(dict.fromkeys(spec.name for spec in _SOURCES.values()))
+
+
+def unknown_sources(names: Sequence[str]) -> list[str]:
+    """Return the entries of *names* that no backend will answer to.
+
+    Unknown names are skipped with a warning at request time, which is easy to
+    miss: the run simply shows fewer papers and still reports success. Callers
+    that can surface it earlier (``researchclaw doctor``) use this.
+    """
+    return [name for name in names if normalise_source(name) not in _SOURCES]
 
 
 CacheGet = Callable[[str, str, int, int], list[dict[str, object]] | None]
