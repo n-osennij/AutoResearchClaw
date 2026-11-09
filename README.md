@@ -647,9 +647,9 @@ literature_search:
   sources: ["openalex", "semantic_scholar", "arxiv"]  # Subset of the 7 backends below, in call order
   max_results_per_query: 40          # Results per query before deduplication
   inter_query_delay_sec: 1.5         # Delay between expanded queries (per-source pacing is built in)
-  max_screen_chars: 100000           # Stage-5 candidate blob cap sent to the LLM (chars)
-  max_abstract_chars: 800            # Abstract truncation before screening
-  min_shortlist: 15                  # Target shortlist size (backfilled if the model returns fewer)
+  max_screen_chars: 600000           # Stage-5 candidate blob cap (chars) — 1M-token preset
+  max_abstract_chars: 1200           # Abstract truncation before screening
+  min_shortlist: 25                  # Target shortlist size (backfilled if the model returns fewer)
   openalex_email: "researchclaw@users.noreply.github.com"
   openalex_api_key_env: "OPENALEX_API_KEY"
   openalex_api_key: ""              # Optional; env var is preferred
@@ -823,11 +823,23 @@ names are skipped). Keys go inline (`*_api_key`) or into the env var named by
 applies; `0` disables it so classic pre-2020 work (Transformer, Adam, ResNet) is
 searchable again. While a floor is active, `researchclaw doctor` warns about it
 and Stage 4 logs it plus writes `year_filter` into `stage-04/search_meta.json`.
-Screening budget is configurable too: `max_screen_chars` (default 100 000 chars
-≈ 25–30k tokens) caps the candidate blob the screener sees, `max_abstract_chars`
-truncates abstracts first, `min_shortlist` is the shortlist target. With a
-1M-token model, 250 000–400 000 chars is a sane ceiling — beyond that one call
-gets expensive and screening precision drops. `pubmed_domain_gate: true` drops PubMed unless `research.domains` looks
+Screening budget is configurable too. Stage 4 may collect 600–900 unique papers
+but the screener only sees what fits: `max_screen_chars` caps the blob,
+`max_abstract_chars` truncates each abstract first, `min_shortlist` is the
+target shortlist. One candidate line measures ~1 340 chars with an 800-char
+abstract, ~1 740 with 1 200, so capacity ≈ chars / line size (tokens ≈ chars/4):
+
+| Context window | `max_screen_chars` | `max_abstract_chars` | Papers seen | Tokens |
+|---|---|---|---|---|
+| 128k | 100 000 | 800 | ~74 | ~25k |
+| 200k | 200 000 | 1 000 | ~130 | ~50k |
+| 1M (example config) | 600 000 | 1 200 | ~345 | ~150k |
+
+Longer abstracts buy evidence per paper but cost slots (600k holds ~448 papers
+at 800 chars vs ~345 at 1 200). Past ~400–500 papers in a single call, screening
+precision drops — that is where batched screening beats a bigger prompt.
+Omitting the keys falls back to the conservative code defaults (100 000 / 800 /
+15), which fit any 128k model. `pubmed_domain_gate: true` drops PubMed unless `research.domains` looks
 biomedical — its word-level query translation floods an ML topic with
 irrelevant clinical hits. Open-access `pdf_url` links captured by any source
 are passed to the PDF extractor when `web_search.enable_pdf_extraction` is on

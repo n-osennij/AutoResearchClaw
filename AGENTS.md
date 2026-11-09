@@ -51,7 +51,7 @@ Everything is one YAML file; `config.yaml` overrides the example.
 | `literature_search.*_api_key` / `*_env` | Inline wins over env. `CORE_API_KEY` is required for `core`; `S2_API_KEY` and `NCBI_API_KEY` are optional improvements; OpenAlex works keyless from a shared pool |
 | `literature_search.pubmed_domain_gate` | `true` → drop PubMed unless `research.domains` looks biomedical |
 | `research.min_year` | publication-year floor, default 2020; `0` = no cutoff. Doctor warns while it is active |
-| `literature_search.max_screen_chars` / `max_abstract_chars` / `min_shortlist` | Stage-5 screening budget: 100 000 chars / 800 / 15 by default; raise for large-context models |
+| `literature_search.max_screen_chars` / `max_abstract_chars` / `min_shortlist` | Stage-5 screening budget. Code default 100 000 / 800 / 15 (~74 papers, ~25k tokens); the example config ships the 1M preset 600 000 / 1 200 / 25 (~345 papers, ~150k tokens) |
 | `experiment.mode` | `simulated` (fake numbers), `sandbox` (real subprocess), `docker`, `ssh_remote`, `colab_drive`, plus domain agents `collider_agent` / `biology_agent` / `stat_agent` |
 | `experiment.sandbox.python_path` | Interpreter that runs generated experiment code |
 | `security.hitl_required_stages` | Gate stages (default 5, 9, 20) |

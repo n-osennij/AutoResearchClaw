@@ -129,16 +129,35 @@ literature_search:
   # Pause between expanded queries. Per-source pauses (S2/OpenReview 1 req/s,
   # the rest faster) are built into researchclaw/literature/search.py.
   inter_query_delay_sec: 1.5
-  # Stage-5 screening budget. The candidate blob sent to the screener is capped
-  # at max_screen_chars, with abstracts cut to max_abstract_chars first.
-  # 100_000 chars ≈ 25-30k tokens. With a 1M-token model 250_000-400_000 is a
-  # sane ceiling (~60-110k tokens): larger prompts cost more and screening
-  # precision drops once hundreds of papers are in one call.
-  max_screen_chars: 100000
-  max_abstract_chars: 800
+  # ── Stage-5 screening budget ───────────────────────────────────────────
+  # Stage 4 can collect 600-900 unique papers; they are NOT all sent to the
+  # screener. The blob is capped at max_screen_chars, and every abstract is cut
+  # to max_abstract_chars first. Measured size of one candidate line (JSON,
+  # authors already stripped by stage 5):
+  #     abstract  800 chars -> ~1340 chars/paper
+  #     abstract 1200 chars -> ~1740 chars/paper
+  #     abstract 1500 chars -> ~2040 chars/paper
+  # Capacity is therefore approx max_screen_chars / line size, and tokens are
+  # approx chars / 4:
+  #     100 000 chars -> ~74 papers  (~25k tokens)
+  #     200 000 chars -> ~130 papers (~50k tokens)
+  #     600 000 chars -> ~345 papers (~150k tokens)
+  # The values below are the 1M-token preset: ~150k of a 1M window, i.e. room
+  # for the system prompt, topic and the JSON answer, and most of what a normal
+  # run collects. Smaller windows:
+  #     128k: max_screen_chars: 100000, max_abstract_chars: 800,  min_shortlist: 15
+  #     200k: max_screen_chars: 200000, max_abstract_chars: 1000, min_shortlist: 15
+  # Trade-off: a longer abstract buys evidence per paper but costs slots — 600k
+  # holds ~448 papers at 800 chars vs ~345 at 1200. Past ~400-500 papers in one
+  # call screening precision drops; that is where batching (several calls) wins
+  # over a bigger prompt.
+  # Omitting these keys falls back to the conservative code defaults
+  # (100000 / 800 / 15), which fit any 128k-window model.
+  max_screen_chars: 600000
+  max_abstract_chars: 1200
   # Target shortlist size; a smaller model verdict is backfilled from the
   # keyword-prefiltered set.
-  min_shortlist: 15
+  min_shortlist: 25
   openalex_email: "researchclaw@users.noreply.github.com"
   openalex_api_key_env: "OPENALEX_API_KEY"
   openalex_api_key: ""

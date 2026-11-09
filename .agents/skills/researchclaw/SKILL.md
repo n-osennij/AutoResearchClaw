@@ -46,7 +46,7 @@ The knobs that actually matter:
 | `llm.reviewer_model` / `fallback_models` | optional second opinion and fallback chain |
 | `literature_search.sources` | subset of openalex, semantic_scholar, arxiv, openreview, crossref, pubmed, core |
 | `literature_search.max_results_per_query` | **40** results per source per query (default) |
-| `literature_search.max_screen_chars` / `max_abstract_chars` / `min_shortlist` | Stage-5 screening budget: 100 000 chars / 800 / 15. Raise for large-context models (250–400k chars is a sane ceiling) |
+| `literature_search.max_screen_chars` / `max_abstract_chars` / `min_shortlist` | Stage-5 screening budget; example config ships the 1M preset 600 000 / 1 200 / 25 (~345 papers, ~150k tokens) |
 | `literature_search.*_api_key` / `*_env` | `CORE_API_KEY` required for `core`; S2/NCBI optional |
 | `experiment.mode` | `sandbox` (real subprocess), `simulated` (fake numbers), `docker`, `ssh_remote`, `colab_drive`, `agentic`, `collider_agent`, `biology_agent`, `stat_agent` |
 | `experiment.sandbox.python_path` | interpreter for generated code — on Windows `...\Scripts\python.exe` |
@@ -143,10 +143,19 @@ to cite.
   Stage 3 yields up to 8 queries, Stage 4 adds up to 5 broader variants, so a
   3-source run collects roughly 960–1560 candidates before dedup.
 - **Screening:** candidates are pre-filtered by keyword overlap, sorted by
-  overlap, abstracts cut to `max_abstract_chars` (800), and the whole blob for
-  the LLM is capped at `max_screen_chars` (100 000 chars ≈ 25–30k tokens) — the
-  model does not see every candidate on huge runs. Both are config knobs; with
-  a 1M-token model 250 000–400 000 chars is a sane ceiling.
+  overlap, abstracts cut to `max_abstract_chars`, and the blob sent to the LLM
+  is capped at `max_screen_chars` — the model does not see every candidate on
+  huge runs. One candidate line is ~1 340 chars at an 800-char abstract,
+  ~1 740 at 1 200, so capacity ≈ chars / line size (tokens ≈ chars/4):
+
+  | Window | `max_screen_chars` | `max_abstract_chars` | Papers seen | Tokens |
+  |---|---|---|---|---|
+  | 128k | 100 000 | 800 | ~74 | ~25k |
+  | 200k | 200 000 | 1 000 | ~130 | ~50k |
+  | 1M (example config) | 600 000 | 1 200 | ~345 | ~150k |
+
+  Longer abstracts cost slots (600k holds ~448 papers at 800 chars vs ~345 at
+  1 200). Past ~400–500 papers in one call, precision drops — batch instead.
 - **Shortlist:** the target is 15 papers (backfilled from the prefiltered set if
   the model returns fewer; an empty model verdict pauses the stage).
 - **Knowledge cards:** Stage 6 asks for one card per shortlisted paper; the
