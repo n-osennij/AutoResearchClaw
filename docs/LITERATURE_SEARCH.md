@@ -51,7 +51,7 @@ displacing recent work.
 
 Verify a run: `grep -c '"year_band": "foundational"' artifacts/<run>/stage-04/candidates.jsonl`
 and see `year_filter` / `hybrid_search` in `stage-04/search_meta.json`.
-`researchclaw doctor` warns while a floor is active.
+`researchclaw doctor` reports the floor as a pass while the default hybrid pass is on; it warns only when `hybrid_search: false` leaves the floor unmitigated.
 
 ### Screening budget
 
@@ -71,7 +71,7 @@ The example config ships the 1M preset (600 000 / 1 200 / 25) and
 `researchclaw init` copies it. Omitting the keys falls back to the code defaults
 (100 000 / 800 / 15), which fit any 128k model. Longer abstracts buy evidence
 per paper but cost slots (600k holds ~448 papers at 800 chars vs ~345 at
-1 200); past ~400–500 papers in one call, batch instead of enlarging the prompt.
+1 200); past ~400–500 papers, raising the cap is a deliberate trade: Stage 5 makes a single call, so the truncated tail is never screened.
 
 ### Literature cache
 
@@ -91,6 +91,26 @@ any source are passed to the PDF extractor when
 `web_search.enable_pdf_extraction` is on (pip extra `pdf`); the extracted text
 lands in `stage-04/web_context.md`.
 
+## Running only the literature review
+
+Stages 1–7 are enough for a review: scoping, queries, collection, screening,
+knowledge cards, synthesis. The `review` command runs exactly that range and
+renders one document:
+
+```bash
+researchclaw review -c config.yaml -t "KV cache compression for long context"
+# -> artifacts/rc-<timestamp>-<hash>/review.md
+
+researchclaw review --run-dir artifacts/rc-...   # render an existing run
+```
+
+`review.md` sections: scope, search strategy (queries, sources, year policy),
+screening funnel, shortlist table (title/year/venue/citations/relevance),
+evidence cards, synthesis and gaps, numbered references. Gates are
+auto-approved; if a stage fails the command still renders whatever exists and
+prints the unfinished stages to stderr. Via the MCP server the same range is
+reachable with `run_pipeline {topic, to_stage: "SYNTHESIS"}`.
+
 ## Where to change what
 
 | Want | Knob | Code default | Example config |
@@ -105,4 +125,5 @@ lands in `stage-04/web_context.md`.
 
 Checks after a run: `stage-04/search_meta.json` (`year_filter`,
 `hybrid_search`, `cache`), `stage-04/candidates.jsonl` (`year_band`), and
-`researchclaw doctor` (`min_year`, `literature_cache` warnings).
+`researchclaw doctor` (`min_year`, `literature_cache` checks — the year-floor
+check warns only when `hybrid_search: false`).

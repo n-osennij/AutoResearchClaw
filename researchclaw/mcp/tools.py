@@ -15,6 +15,13 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "topic": {"type": "string", "description": "The research topic"},
                 "config_path": {"type": "string", "description": "Path to config YAML (optional)"},
                 "auto_approve": {"type": "boolean", "description": "Auto-approve gate stages"},
+                "to_stage": {
+                    "type": "string",
+                    "description": (
+                        "Stop after this stage name (e.g. SYNTHESIS for a "
+                        "literature-only run). Omit for the full pipeline."
+                    ),
+                },
             },
             "required": ["topic"],
         },
@@ -60,7 +67,13 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "paper_path": {"type": "string", "description": "Path to paper markdown or LaTeX file"},
+                "paper_path": {
+                    "type": "string",
+                    "description": (
+                        "Paper file, relative to the working directory or under "
+                        "run_id; absolute paths outside those roots are rejected"
+                    ),
+                },
                 "run_id": {"type": "string", "description": "Associated run ID (optional)"},
             },
             "required": ["paper_path"],

@@ -110,12 +110,15 @@ class TestMCPServer:
         server = self._server(tmp_path)
         captured: dict[str, Any] = {}
 
-        def fake_run(run_id: str, run_dir: Path, config: Any, auto: bool) -> None:
+        def fake_run(
+            run_id: str, run_dir: Path, config: Any, auto: bool, to_stage: str = ""
+        ) -> None:
             captured.update(
                 run_id=run_id,
                 run_dir=Path(run_dir),
                 topic=config.research.topic,
                 auto=auto,
+                to_stage=to_stage,
             )
 
         monkeypatch.setattr(server, "_run_pipeline_sync", fake_run)
@@ -131,7 +134,39 @@ class TestMCPServer:
         assert str(result["run_id"]).startswith("mcp-")
         assert captured["topic"] == "GNN drug discovery"
         assert captured["auto"] is True
+        assert captured["to_stage"] == ""
         assert Path(result["run_dir"]).is_dir()
+
+    def test_run_pipeline_accepts_to_stage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+
+        def fake_run(
+            run_id: str, run_dir: Path, config: Any, auto: bool, to_stage: str = ""
+        ) -> None:
+            captured["to_stage"] = to_stage
+
+        monkeypatch.setattr(server, "_run_pipeline_sync", fake_run)
+        result = asyncio.run(
+            server.handle_tool_call(
+                "run_pipeline", {"topic": "literature only", "to_stage": "SYNTHESIS"}
+            )
+        )
+        assert result["success"] is True
+        assert result["to_stage"] == "SYNTHESIS"
+        assert captured["to_stage"] == "SYNTHESIS"
+
+    def test_run_pipeline_rejects_unknown_to_stage(self, tmp_path: Path) -> None:
+        server = self._server(tmp_path)
+        result = asyncio.run(
+            server.handle_tool_call(
+                "run_pipeline", {"topic": "x", "to_stage": "NOT_A_STAGE"}
+            )
+        )
+        assert result["success"] is False
+        assert "Unknown to_stage" in result["error"]
 
     def test_handle_run_pipeline_without_config(self, tmp_path: Path) -> None:
         server = ResearchClawMCPServer(artifacts_root=tmp_path / "artifacts")
@@ -251,7 +286,9 @@ class TestMCPServer:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         server = self._server(tmp_path)
-        paper = tmp_path / "paper_draft.md"
+        run_dir = tmp_path / "artifacts" / "rc-test" / "stage-22"
+        run_dir.mkdir(parents=True)
+        paper = run_dir / "paper_final.md"
         paper.write_text("# Title\nbody", encoding="utf-8")
 
         class _Response:
@@ -279,6 +316,19 @@ class TestMCPServer:
             )
         )
         assert result["success"] is False
+
+    def test_handle_review_paper_rejects_outside_path(self, tmp_path: Path) -> None:
+        """A client-supplied absolute path must not be read from anywhere."""
+        server = self._server(tmp_path)
+        outside = tmp_path.parent / "secret.md"
+        outside.write_text("private", encoding="utf-8")
+
+        result = asyncio.run(
+            server.handle_tool_call("review_paper", {"paper_path": str(outside)})
+        )
+
+        assert result["success"] is False
+        assert "must live under" in result["error"]
 
     def test_handle_get_paper_missing(self, tmp_path: Path) -> None:
         server = self._server(tmp_path)
@@ -385,6 +435,103 @@ class TestMCPProtocol:
         asyncio.run(_run())
         response = json.loads(stdout.getvalue().strip())
         assert response["error"]["code"] == -32700
+
+    def test_prints_do_not_corrupt_the_protocol_stream(self, capsys) -> None:
+        server = ResearchClawMCPServer()
+        original = server.handle_tool_call
+
+        async def noisy(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            print("pipeline progress line")
+            return await original(name, arguments)
+
+        server.handle_tool_call = noisy  # type: ignore[method-assign]
+        responses = _serve(
+            server,
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "health_check", "arguments": {}},
+                }
+            ],
+        )
+
+        assert len(responses) == 1
+        assert responses[0]["id"] == 1
+        assert "pipeline progress line" in capsys.readouterr().err
+
+    def test_non_object_params_get_invalid_params(self) -> None:
+        responses = _serve(
+            ResearchClawMCPServer(),
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": [1],
+                },
+                {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            ],
+        )
+
+        assert responses[0]["error"]["code"] == -32602
+        assert responses[1]["id"] == 2
+        assert responses[1]["result"] == {}
+
+    def test_to_stage_full_is_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = TestMCPServer._server(tmp_path)
+        monkeypatch.setattr(
+            ResearchClawMCPServer,
+            "_run_pipeline_sync",
+            staticmethod(lambda *args, **kwargs: None),
+        )
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "run_pipeline", {"topic": "x", "to_stage": "FULL"}
+            )
+        )
+
+        assert result["success"] is True
+        assert result["to_stage"] == "full"
+
+    def test_invalid_to_stage_leaves_no_artifacts(self, tmp_path: Path) -> None:
+        server = ResearchClawMCPServer(artifacts_root=tmp_path / "artifacts")
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "run_pipeline", {"topic": "x", "to_stage": "NOPE"}
+            )
+        )
+
+        assert result["success"] is False
+        assert not (tmp_path / "artifacts").exists()
+
+    def test_explicit_missing_config_does_not_fall_back(self, tmp_path: Path) -> None:
+        server = ResearchClawMCPServer(artifacts_root=tmp_path / "artifacts")
+
+        with pytest.raises(FileNotFoundError, match="Config file not found"):
+            server._load_config(str(tmp_path / "typo.yaml"))
+
+    def test_stage_traversal_is_rejected(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "artifacts" / "rc-x"
+        run_dir.mkdir(parents=True)
+        (tmp_path / "evil").mkdir()
+        (tmp_path / "evil" / "results.json").write_text("{}", encoding="utf-8")
+        server = ResearchClawMCPServer(artifacts_root=tmp_path / "artifacts")
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "get_experiment_results",
+                {"run_id": "rc-x", "stage": "/../../../evil"},
+            )
+        )
+
+        assert result["success"] is False
+        assert "Invalid stage" in result["error"]
 
     def test_serve_exits_on_eof(self) -> None:
         server = ResearchClawMCPServer()

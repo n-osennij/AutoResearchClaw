@@ -163,9 +163,9 @@ literature_search:
   #     128k: max_screen_chars: 100000, max_abstract_chars: 800,  min_shortlist: 15
   #     200k: max_screen_chars: 200000, max_abstract_chars: 1000, min_shortlist: 15
   # Trade-off: a longer abstract buys evidence per paper but costs slots — 600k
-  # holds ~448 papers at 800 chars vs ~345 at 1200. Past ~400-500 papers in one
-  # call screening precision drops; that is where batching (several calls) wins
-  # over a bigger prompt.
+  # holds ~448 papers at 800 chars vs ~345 at 1200. Stage 5 makes a single call,
+  # so past ~400-500 papers the extra tail is simply not screened; raising the cap
+  # is the only lever (there is no batching).
   # `researchclaw init` copies these values. Omitting the keys falls back to the
   # conservative code defaults (100000 / 800 / 15), which fit any 128k model.
   max_screen_chars: 600000
@@ -195,10 +195,11 @@ security:
   redact_sensitive_logs: true
 
 experiment:
-  # ★ mode 决定实验结果的真实性
-  #   "sandbox"   — 在本地沙盒中实际执行生成的 Python 代码，产出真实实验数据
-  #   "docker"    — 在 Docker 容器中执行，支持 GPU 直通、依赖自动安装、内存隔离
-  #   "simulated" — 不执行代码，使用公式生成假数据（仅用于框架开发调试，不应用于论文生成）
+  # ★ mode decides whether results are real
+  #   "sandbox"   — run generated Python locally, real experiment data
+  #   "docker"    — run in Docker (GPU passthrough, auto deps, memory isolation)
+  #   "simulated" — no execution, formula-generated numbers (framework debugging only)
+  #   others: ssh_remote | colab_drive | agentic | collider_agent | biology_agent | stat_agent
   mode: "sandbox"
   time_budget_sec: 300
   max_iterations: 10

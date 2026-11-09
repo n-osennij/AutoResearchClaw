@@ -106,7 +106,13 @@ Investigate the topic with emphasis on reproducible methods and measurable outco
         logger.info("Hardware detected: %s (%s, %s MB VRAM)", hw.gpu_name, hw.gpu_type, hw.vram_mb)
 
     # --- Optionally ensure PyTorch is available ---
-    if hw.has_gpu and config.experiment.mode == "sandbox":
+    # A literature-only run needs no accelerator, and installing torch from a
+    # Stage-1 hardware probe would be a multi-GB surprise.
+    if (
+        hw.has_gpu
+        and config.experiment.mode == "sandbox"
+        and not getattr(config.research, "literature_only", False)
+    ):
         torch_ok = ensure_torch_available(config.experiment.sandbox.python_path, hw.gpu_type)
         if torch_ok:
             logger.info("PyTorch is available for sandbox experiments")

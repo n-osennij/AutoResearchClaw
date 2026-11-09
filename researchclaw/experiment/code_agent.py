@@ -117,12 +117,19 @@ def _to_text(value: str | bytes | None) -> str:
 
 
 def _collect_py_files(workdir: Path) -> dict[str, str]:
-    """Read all .py files from a directory (flat, no subdirs)."""
+    """Read every .py file under *workdir*, keeping relative paths.
+
+    CLI agents happily write ``src/main.py``; a flat glob would silently
+    return an empty project for them.
+    """
     files: dict[str, str] = {}
-    for pyfile in sorted(workdir.glob("*.py")):
-        if pyfile.name.startswith("_codex_") or pyfile.name.startswith("_agent_"):
+    for pyfile in sorted(workdir.rglob("*.py")):
+        parts = pyfile.relative_to(workdir).parts
+        if any(part.startswith(("_codex_", "_agent_", ".")) for part in parts):
             continue
-        files[pyfile.name] = pyfile.read_text(encoding="utf-8")
+        if "__pycache__" in parts:
+            continue
+        files["/".join(parts)] = pyfile.read_text(encoding="utf-8")
     return files
 
 
@@ -130,7 +137,9 @@ def _seed_workdir(workdir: Path, files: dict[str, str]) -> None:
     """Pre-populate workdir with files for refinement/repair."""
     workdir.mkdir(parents=True, exist_ok=True)
     for fname, content in files.items():
-        (workdir / fname).write_text(content, encoding="utf-8")
+        target = workdir / fname
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
 
 
 def format_feedback_for_agent(
@@ -471,7 +480,8 @@ class _CliAgentBase:
         error = None
         if timed_out:
             error = f"Timed out after {elapsed:.0f}s"
-        elif returncode != 0 and not files:
+        elif returncode != 0:
+            # Keep partial files, but never report a failed run as success.
             error = f"Exited {returncode}: {stderr[:500]}"
         return CodeAgentResult(
             files=files,
@@ -750,6 +760,12 @@ class PiAgent(_CliAgentBase):
             "-p", prompt,
             "--no-session",
             "--mode", "text",
+            # Keep the experiment workdir isolated: the user's MCP servers,
+            # skills and context files must not leak into a codegen run (and
+            # an MCP server that is this project would recurse).
+            "--no-mcp",
+            "--no-skills",
+            "--no-context-files",
             "--tools", "read,bash,edit,write",
         ]
         if self._model:

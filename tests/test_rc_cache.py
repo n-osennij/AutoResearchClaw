@@ -207,3 +207,45 @@ class TestCacheYearPolicy:
         assert info["legacy_entries"] is True
         assert info["matches"] is False
         assert info["entries"] == 1
+
+class TestCacheRobustness:
+    def test_unreadable_entry_returns_miss(self, tmp_path):
+        # A directory where the entry file should be raises IsADirectoryError
+        # on read; the cache must report a miss instead of propagating OSError.
+        (tmp_path / f"{cache_key('q', 'openalex', 5)}.json").mkdir()
+        assert get_cached("q", "openalex", 5, cache_base=tmp_path) is None
+
+    def test_clear_cache_keeps_policy(self, tmp_path):
+        from researchclaw.literature.cache import (
+            inspect_search_policy,
+            note_search_policy,
+        )
+
+        note_search_policy(min_year=2020, hybrid=True, cache_base=tmp_path)
+        put_cache("q", "openalex", 5, [{"title": "x"}], cache_base=tmp_path)
+
+        assert clear_cache(cache_base=tmp_path) == 1
+        info = inspect_search_policy(min_year=2020, hybrid=True, cache_base=tmp_path)
+        assert info["entries"] == 0
+        assert info["policy"]["min_year"] == 2020
+
+    def test_corrupt_policy_does_not_crash_inspect(self, tmp_path):
+        from researchclaw.literature.cache import inspect_search_policy
+
+        (tmp_path / ".policy.json").write_text(
+            '{"min_year": "v2020"}', encoding="utf-8"
+        )
+        info = inspect_search_policy(min_year=2020, hybrid=True, cache_base=tmp_path)
+        assert info["matches"] is False
+
+    def test_publisher_bibtex_survives_cache_roundtrip(self):
+        from researchclaw.literature.search import _dicts_to_papers, _papers_to_dicts
+
+        paper = Paper(
+            paper_id="x",
+            title="Title",
+            _bibtex_override="@article{x, title={Title}}",
+        )
+        restored = _dicts_to_papers(_papers_to_dicts([paper]))
+        assert restored[0]._bibtex_override == paper._bibtex_override
+

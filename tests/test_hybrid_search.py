@@ -177,3 +177,95 @@ class TestHybridSearch:
         assert info["policy"]["hybrid"] is True
         assert meta["cache"]["previous_policy"] is None
         assert meta["cache"]["legacy_entries"] is False
+
+    def test_cross_identifier_dedup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def search(year_min: int) -> list[Paper]:
+            if year_min > 0:
+                return [
+                    Paper(
+                        paper_id="recent",
+                        title="Attention Is All You Need",
+                        year=2023,
+                        doi="10.1/x",
+                        source="openalex",
+                    )
+                ]
+            # Same paper from a different backend: no DOI, arXiv id and a
+            # slightly different title. A single-identifier check misses it.
+            return [
+                Paper(
+                    paper_id="old",
+                    title="Attention is all you need.",
+                    year=2015,
+                    arxiv_id="1706.03762",
+                    source="arxiv",
+                )
+            ]
+
+        _, meta, stage_dir = _run_stage4(
+            tmp_path, monkeypatch, _config(tmp_path), search
+        )
+
+        rows = [
+            json.loads(line)
+            for line in (stage_dir / "candidates.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [row["paper_id"] for row in rows] == ["recent"]
+        assert meta["hybrid_search"]["foundational_added"] == 0
+
+    def test_zero_cap_skips_second_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[int] = []
+
+        def search(year_min: int) -> list[Paper]:
+            calls.append(year_min)
+            return [_paper("p", 2022)]
+
+        config = _config(tmp_path, foundational_max_papers=0)
+        _, meta, _ = _run_stage4(tmp_path, monkeypatch, config, search)
+
+        assert calls == [2020]
+        assert meta["hybrid_search"]["enabled"] is True
+        assert meta["hybrid_search"]["foundational_added"] == 0
+
+    def test_merged_candidates_sorted_by_citations(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def search(year_min: int) -> list[Paper]:
+            if year_min > 0:
+                return [
+                    _paper("recent-1", 2022, citation_count=5),
+                    _paper("recent-2", 2024, citation_count=1),
+                ]
+            return [_paper("old", 2015, citation_count=500)]
+
+        _, _, stage_dir = _run_stage4(
+            tmp_path, monkeypatch, _config(tmp_path), search
+        )
+
+        rows = [
+            json.loads(line)
+            for line in (stage_dir / "candidates.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [row["paper_id"] for row in rows] == ["old", "recent-1", "recent-2"]
+
+    def test_string_year_min_is_coerced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def search(year_min: int) -> list[Paper]:
+            return [_paper("p", 2022)]
+
+        result, meta, _ = _run_stage4(
+            tmp_path, monkeypatch, _config(tmp_path), search, year_min="2020"
+        )
+
+        assert result.status == StageStatus.DONE
+        assert meta["year_filter"]["active"] is True
+

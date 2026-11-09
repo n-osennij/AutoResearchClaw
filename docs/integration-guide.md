@@ -226,7 +226,7 @@ research:
   topic: "Your research topic here"    # Can also be set via CLI --topic flag
   domains:
     - "machine-learning"               # Guides literature search scope
-  daily_paper_count: 10                # Target papers to collect
+  daily_paper_count: 0                 # LLM-fallback stub candidates when real search returns nothing (min 20)
   quality_threshold: 4.0               # Minimum paper quality score (1-5)
   min_year: 2020                       # Publication-year floor (0 = none)
   hybrid_search: true                  # + second pass for older foundations
@@ -310,6 +310,23 @@ researchclaw run --config config.yaml --auto-approve
 researchclaw run --config config.yaml --topic "Transformer attention for time series" --auto-approve
 ```
 
+### Literature review only
+
+Stages 1–7 collect, screen and synthesise the literature without experiments or
+paper writing:
+
+```bash
+researchclaw review -c config.yaml -t "KV cache compression for long context"
+# -> artifacts/rc-<timestamp>-<hash>/review.md
+
+researchclaw review --run-dir artifacts/rc-...   # re-render, no new searches
+```
+
+Gates are auto-approved. The document has scope, queries and sources, the year
+policy, the screening funnel, a shortlist table, evidence cards, the synthesis
+with gaps, and references. All search knobs (`research.min_year`,
+`research.hybrid_search`, `literature_search.*`) still apply.
+
 ### CLI Commands
 
 | Command | What It Does |
@@ -317,6 +334,7 @@ researchclaw run --config config.yaml --topic "Transformer attention for time se
 | `researchclaw setup` | Interactive first-time setup (installs OpenCode Beast Mode, checks Docker/LaTeX) |
 | `researchclaw init` | Interactive config creation (choose LLM provider, creates `config.arc.yaml`) |
 | `researchclaw run` | Run the full 23-stage pipeline |
+| `researchclaw review` | Run only the literature review (Stages 1–7) and render `review.md` |
 | `researchclaw validate` | Check your config file for errors |
 | `researchclaw doctor` | Diagnose environment issues (Python, dependencies, API connectivity) |
 | `researchclaw report --run-dir <path>` | Generate a human-readable summary of a completed run |
@@ -369,7 +387,7 @@ The pipeline runs in 8 phases. Each stage reads artifacts from previous stages a
 | # | Stage | What Happens | Produces |
 |---|-------|-------------|----------|
 | 3 | SEARCH_STRATEGY | Plans search queries and data sources | `search_plan.yaml`, `sources.json` |
-| 4 | LITERATURE_COLLECT | Queries **real APIs** (arXiv-first, then Semantic Scholar) with expanded queries for broad coverage | `candidates.jsonl` |
+| 4 | LITERATURE_COLLECT | Queries **real APIs** in configured order (default OpenAlex → Semantic Scholar → arXiv) with expanded queries for broad coverage | `candidates.jsonl` |
 | 5 | LITERATURE_SCREEN | **[Gate]** Filters by relevance and quality | `shortlist.jsonl` |
 | 6 | KNOWLEDGE_EXTRACT | Extracts structured knowledge cards from each paper | `cards/` |
 
@@ -440,20 +458,27 @@ Each run creates a timestamped directory under `artifacts/`:
 
 ```
 artifacts/rc-20260310-143200-a1b2c3/
-├── stage-1/goal.md                        # Research goal
-├── stage-2/problem_tree.md                # Problem decomposition
-├── stage-3/search_plan.yaml               # Search strategy
-├── stage-4/candidates.jsonl               # Raw literature results
-├── stage-5/shortlist.jsonl                # Screened papers
-├── stage-6/cards/                         # Knowledge cards (one per paper)
-├── stage-7/synthesis.md                   # Research gap analysis
-├── stage-8/hypotheses.md                  # Research hypotheses
-├── stage-9/exp_plan.yaml                  # Experiment plan
+├── stage-01/goal.md                       # Research goal
+├── stage-02/problem_tree.md               # Problem decomposition
+├── stage-03/search_plan.yaml              # Search strategy
+├── stage-03/sources.json                  # Selected literature backends
+├── stage-03/queries.json                  # Expanded queries + year policy
+├── stage-04/candidates.jsonl              # Raw literature results
+├── stage-04/references.bib                # BibTeX for the candidate set
+├── stage-04/search_meta.json              # real_search, year_filter, hybrid, cache
+├── stage-04/web_context.md                # Only when web_search is enabled
+├── stage-05/shortlist.jsonl               # Screened papers
+├── stage-05/screen_meta.json              # Only on the reject-all pause
+├── stage-06/cards/                        # Knowledge cards (one per paper)
+├── stage-07/synthesis.md                  # Research gap analysis
+├── stage-08/hypotheses.md                 # Research hypotheses
+├── stage-09/exp_plan.yaml                 # Experiment plan
 ├── stage-10/experiment.py                 # Generated experiment code
 ├── stage-10/experiment_spec.md            # Experiment specification
 ├── stage-11/schedule.json                 # Resource schedule
-├── stage-12/runs/run-1.json               # Experiment results
-├── stage-13/experiment_final.py           # Refined experiment code
+├── stage-12/runs/<mode>/results.json      # Experiment results
+├── stage-13/experiment_final.py           # Refined experiment code (or
+├── stage-13/experiment_final/             #   a directory, depending on path)
 ├── stage-13/experiment_v1.py              # Iteration 1 snapshot
 ├── stage-13/refinement_log.json           # Refinement history
 ├── stage-14/analysis.md                   # Statistical analysis
@@ -496,7 +521,7 @@ artifacts/rc-20260310-143200-a1b2c3/
 
 ## 7. Experiment Modes
 
-AutoResearchClaw supports four modes for running experiments:
+AutoResearchClaw supports nine experiment modes (`simulated`, `sandbox`, `docker`, `ssh_remote`, `colab_drive`, `agentic`, `collider_agent`, `biology_agent`, `stat_agent`). This section covers the four general-purpose ones; the domain agents are documented in `docs/DOMAIN_INTEGRATION_GUIDE.md`.
 
 ### Simulated (Default)
 
@@ -804,9 +829,9 @@ pi works in two independent roles.
 
 **As the driving agent (recommended).** pi auto-loads `AGENTS.md` from the repo
 root, so opening the project is enough: ask it to run the pipeline, inspect
-stage artifacts, or fix a failed stage. `.agents/skills/` is the *pipeline's*
-skill library, not pi's — pi's own skills live in `~/.agents/skills/` and
-`.agents/skills/`.
+stage artifacts, or fix a failed stage. `.agents/skills/` is shared on purpose:
+pi loads it, and the pipeline's HEP installers reuse it. pi's user-level skills
+live in `~/.agents/skills/`.
 
 **As the LLM backend.** `acpx` 0.20 speaks ACP to pi, so the pipeline can use pi
 for every stage instead of an API model:
@@ -1000,7 +1025,7 @@ A: Yes — any OpenAI-compatible endpoint works. Set `llm.base_url` to your loca
 A: Yes. Use `--from-stage STAGE_NAME` to start from any stage. The stage reads its inputs from previously generated artifacts, so the earlier stages must have completed at least once.
 
 **Q: Are the literature references real?**
-A: Yes. Stage 4 uses a multi-source strategy (arXiv-first, then Semantic Scholar) with query expansion to find real papers with real titles, DOIs, and citation counts. The pipeline typically collects 100-200 candidates and aims for 30-60 references in the final paper. Stage 23 then verifies every reference to catch any that the LLM might have hallucinated during paper writing.
+A: Yes. Stage 4 uses a multi-source strategy in configured order (default OpenAlex → Semantic Scholar → arXiv) with query expansion to find real papers with real titles, DOIs, and citation counts. A run typically collects 600–900 unique candidates and the example config aims for a shortlist of 25. Stage 23 then verifies every reference to catch any that the LLM might have hallucinated during paper writing.
 
 **Q: Can I use this for a real paper submission?**
 A: AutoResearchClaw is a research tool, not a paper mill. The output is a strong first draft that should be reviewed, improved, and validated by a human researcher before submission. Think of it as an extremely thorough research assistant.

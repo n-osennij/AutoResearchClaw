@@ -222,6 +222,7 @@ def _dicts_to_papers(dicts: list[dict[str, object]]) -> list[Paper]:
                     url=str(d.get("url", "")),
                     pdf_url=str(d.get("pdf_url", "")),
                     source=str(d.get("source", "")),
+                    _bibtex_override=str(d.get("_bibtex_override", "")),
                 )
             )
         except (KeyError, TypeError, ValueError):

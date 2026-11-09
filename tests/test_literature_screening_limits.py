@@ -92,7 +92,7 @@ class TestScreeningBudget:
                 "year": 2021,
                 "source": "openalex",
             }
-            for i in range(20)
+            for i in range(60)
         ]
         (run_dir / "stage-04" / "candidates.jsonl").write_text(
             "\n".join(json.dumps(r) for r in rows), encoding="utf-8"
@@ -122,16 +122,19 @@ class TestScreeningBudget:
 
         assert result.status == StageStatus.DONE
         prompt = captured["user"]
-        candidate_block = prompt.split("Topic:", 1)[0]
-        # The screening blob respects the configured char cap …
-        assert len(candidate_block) <= 5000
+        # The candidates are the JSON lines appended at the end of the prompt
+        # (the old split at "Topic:" measured the instruction prefix instead).
+        candidate_lines = [
+            line for line in prompt.splitlines() if line.startswith("{")
+        ]
+        shown = [json.loads(line) for line in candidate_lines]
+        # max_screen_chars=5000 is clamped to the 10 000 floor; 60 rows of
+        # ~250 chars overflow it, so the model must see fewer than all rows.
+        assert len(candidate_lines) < 60
+        assert len(candidate_lines) > 0
+        assert sum(len(line) for line in candidate_lines) <= 10_000
         # … and abstracts are cut to max_abstract_chars before it.
-        for line in candidate_block.splitlines():
-            if line.startswith("{"):
-                row = json.loads(line)
-                assert len(row["abstract"]) <= 100 + len("...")
-        # 20 rows would not fit, so the model saw fewer than all of them.
-        assert candidate_block.count('"paper_id"') < 20
+        assert all(len(row["abstract"]) <= 100 + len("...") for row in shown)
         assert (stage_dir / "shortlist.jsonl").exists()
 
 

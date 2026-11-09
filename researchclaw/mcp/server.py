@@ -22,9 +22,11 @@ import asyncio
 import json
 import logging
 import re
+import sys
 import threading
 import time
 import traceback
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -106,7 +108,18 @@ class ResearchClawMCPServer:
             return self.config
         from researchclaw.config import RCConfig
 
-        candidates = [config_path, self._config_path, "config.arc.yaml", "config.yaml"]
+        # An explicit path must never fall through to a different config: a
+        # typo would silently run the pipeline with production-unrelated
+        # settings.
+        if config_path is None and self._config_path:
+            config_path = self._config_path
+        if config_path:
+            path = Path(str(config_path))
+            if not path.is_file():
+                raise FileNotFoundError(f"Config file not found: {path}")
+            return RCConfig.load(path, check_paths=False)
+
+        candidates = ["config.arc.yaml", "config.yaml"]
         for candidate in candidates:
             if not candidate:
                 continue
@@ -166,16 +179,37 @@ class ResearchClawMCPServer:
             return {"success": False, "error": str(exc)}
 
         config = replace(config, research=replace(config.research, topic=topic))
-        run_id = f"mcp-{time.strftime('%Y%m%d-%H%M%S')}-{_slug(topic)}"
+        run_id = (
+            f"mcp-{time.strftime('%Y%m%d-%H%M%S')}-{_slug(topic)}-"
+            f"{uuid.uuid4().hex[:4]}"
+        )
+        auto_approve = bool(args.get("auto_approve", False))
+        to_stage = str(args.get("to_stage") or "").strip().upper()
+        if to_stage == "FULL":
+            # The response reports ``"full"`` for "run to the end"; accept it
+            # back so a client can echo the server's own state.
+            to_stage = ""
+        if to_stage:
+            from researchclaw.pipeline.stages import Stage
+
+            if to_stage not in Stage.__members__:
+                return {
+                    "success": False,
+                    "error": f"Unknown to_stage: {to_stage}",
+                    "stages": sorted(Stage.__members__),
+                }
+        # Create the directory only after validation, so rejected calls do not
+        # litter artifacts/ with empty runs.
         run_dir = self._artifacts_root / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        auto_approve = bool(args.get("auto_approve", False))
 
+        # Keep the process alive until the run finishes: a client that closes
+        # stdin right after ``run_pipeline`` must not kill the pipeline.
         thread = threading.Thread(
             target=self._run_pipeline_sync,
-            args=(run_id, run_dir, config, auto_approve),
+            args=(run_id, run_dir, config, auto_approve, to_stage),
             name=f"rc-{run_id}",
-            daemon=True,
+            daemon=False,
         )
         self._runs[run_id] = {
             "thread": thread,
@@ -190,17 +224,24 @@ class ResearchClawMCPServer:
             "run_id": run_id,
             "run_dir": str(run_dir),
             "auto_approve": auto_approve,
+            "to_stage": to_stage or "full",
             "message": f"Pipeline started for topic: {topic}",
         }
 
     @staticmethod
     def _run_pipeline_sync(
-        run_id: str, run_dir: Path, config: Any, auto_approve: bool
+        run_id: str,
+        run_dir: Path,
+        config: Any,
+        auto_approve: bool,
+        to_stage: str = "",
     ) -> None:
         """Thread body: run the pipeline and log the outcome next to it."""
         from researchclaw.adapters import AdapterBundle
         from researchclaw.pipeline.runner import execute_pipeline
+        from researchclaw.pipeline.stages import Stage
 
+        limit: Stage | None = Stage[to_stage] if to_stage else None
         try:
             execute_pipeline(
                 run_dir=run_dir,
@@ -208,6 +249,7 @@ class ResearchClawMCPServer:
                 config=config,
                 adapters=AdapterBundle(),
                 auto_approve_gates=auto_approve,
+                to_stage=limit,
             )
         except Exception:  # noqa: BLE001 - background thread must not die silently
             logger.exception("MCP pipeline run failed: %s", run_id)
@@ -263,8 +305,10 @@ class ResearchClawMCPServer:
         candidates = list(_RESULT_FILES)
         stage = str(args.get("stage") or "").strip()
         if stage:
+            if not stage.isdigit() or len(stage) > 2:
+                return {"success": False, "error": f"Invalid stage: {stage}"}
             candidates = [
-                f"stage-{stage}/{name}"
+                f"stage-{int(stage):02d}/{name}"
                 for name in (
                     "experiment_summary.json",
                     "results.json",
@@ -272,8 +316,12 @@ class ResearchClawMCPServer:
                 )
             ] + candidates
 
+        run_root = run_dir.resolve()
         for relative in candidates:
-            payload = _read_json(run_dir / relative)
+            path = (run_dir / relative).resolve()
+            if not path.is_relative_to(run_root):
+                continue
+            payload = _read_json(path)
             if payload is not None:
                 return {
                     "success": True,
@@ -321,7 +369,9 @@ class ResearchClawMCPServer:
 
         kwargs: dict[str, Any] = {"limit": limit, "keys": keys}
         if sources:
-            kwargs["sources"] = tuple(str(s) for s in sources)
+            if isinstance(sources, str):
+                sources = [sources]
+            kwargs["sources"] = tuple(str(source) for source in sources)
         try:
             papers = await asyncio.to_thread(search_papers, query, **kwargs)
         except Exception as exc:  # noqa: BLE001 - network source failures
@@ -348,8 +398,34 @@ class ResearchClawMCPServer:
         }
 
     async def _handle_review_paper(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Ask the configured LLM for a review of a paper file."""
-        paper_path = Path(str(args.get("paper_path") or ""))
+        """Ask the configured LLM for a review of a paper file.
+
+        Only files under the working directory, the artifacts root, or an
+        explicit ``run_id`` are readable — ``paper_path`` is client input, not
+        a licence to read ``/etc/passwd``.
+        """
+        raw = str(args.get("paper_path") or "").strip()
+        if not raw:
+            return {"success": False, "error": "paper_path is required"}
+        paper_path = Path(raw)
+        if not paper_path.is_absolute():
+            paper_path = Path.cwd() / paper_path
+        paper_path = paper_path.resolve()
+
+        allowed_roots = [Path.cwd().resolve(), self._artifacts_root.resolve()]
+        run_id = str(args.get("run_id") or "").strip()
+        if run_id:
+            allowed_roots.append(
+                _validated_run_dir(run_id, self._artifacts_root).resolve()
+            )
+        if not any(paper_path.is_relative_to(root) for root in allowed_roots):
+            return {
+                "success": False,
+                "error": (
+                    "paper_path must live under the working directory, the "
+                    "artifacts root, or the given run_id directory"
+                ),
+            }
         if not paper_path.is_file():
             return {"success": False, "error": f"Paper not found: {paper_path}"}
         text = paper_path.read_text(encoding="utf-8", errors="replace")
@@ -431,6 +507,15 @@ class ResearchClawMCPServer:
             result = {"tools": TOOL_DEFINITIONS}
         elif method == "tools/call":
             params = message.get("params") or {}
+            if not isinstance(params, dict):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32602,
+                        "message": "tools/call params must be an object",
+                    },
+                }
             payload = await self.handle_tool_call(
                 str(params.get("name") or ""), params.get("arguments") or {}
             )
@@ -465,6 +550,12 @@ class ResearchClawMCPServer:
 
         transport: StdioTransport = io
         await transport.start()
+        # stdout is the JSON-RPC stream. Pipeline stages print progress from
+        # background threads (runner.py, experiment_repair.py), so route every
+        # print() to stderr while serving. The transport captured the real
+        # stdout handle above and is unaffected by the swap.
+        saved_stdout = sys.stdout
+        sys.stdout = sys.stderr
         self._running = True
         try:
             while True:
@@ -481,10 +572,27 @@ class ResearchClawMCPServer:
                         }
                     )
                     continue
-                response = await self.handle_message(message)
+                try:
+                    response = await self.handle_message(message)
+                except Exception as exc:  # noqa: BLE001 - one bad frame must
+                    # never take the whole server down
+                    logger.error("MCP frame failed: %s", exc)
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": message.get("id"),
+                        "error": {"code": -32603, "message": str(exc)},
+                    }
                 if response is not None:
                     await transport.send(response)
         finally:
+            # A pipeline started over MCP outlives the client's stdin: wait for
+            # in-flight runs before the process can exit.
+            for record in list(self._runs.values()):
+                thread = record.get("thread")
+                if thread is not None and thread.is_alive():
+                    logger.info("Waiting for in-flight run to finish before exit")
+                    thread.join()
+            sys.stdout = saved_stdout
             await transport.close()
             self._running = False
 

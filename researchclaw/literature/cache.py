@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = Path(".researchclaw_cache") / "literature"
 _POLICY_FILE = ".policy.json"
-_TTL_SEC = 86400 * 7  # 7 days (default for S2, OpenAlex)
+_TTL_SEC = 86400 * 7  # 7 days — fallback for sources without a TTL above
 
 # Per-source TTLs: arXiv updates daily at midnight, so 24h cache is optimal.
 # Citation verification results are permanent (verified papers don't change).
@@ -43,10 +44,17 @@ def _cache_dir(base: Path | None = None) -> Path:
     return d
 
 
+def _canonical_source(source: str) -> str:
+    """Same alias mapping the searcher uses, so ``s2`` and
+    ``semantic_scholar`` share one cache namespace."""
+    name = source.strip().lower().replace("-", "_").replace(" ", "_")
+    return "semantic_scholar" if name == "s2" else name
+
+
 def cache_key(query: str, source: str, limit: int, year_min: int = 0) -> str:
     """Deterministic cache key from the query and its year policy."""
     raw = (
-        f"{query.strip().lower()}|{source.strip().lower()}|{limit}|y{int(year_min)}"
+        f"{query.strip().lower()}|{_canonical_source(source)}|{limit}|y{int(year_min)}"
     )
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -91,7 +99,7 @@ def get_cached(
             query[:50], source, int(year_min), age_str, len(papers),
         )
         return papers
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
 
@@ -128,8 +136,21 @@ def put_cache(
         "timestamp": time.time(),
         "papers": papers,
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    logger.debug("Cached %d papers for key %s", len(papers), key)
+    # Write through a temp file: a concurrent read must never see a partially
+    # written entry, and a cache failure must not be reported as a source
+    # rate-limit (the caller logs exceptions from this block that way).
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        logger.debug("Cached %d papers for key %s", len(papers), key)
+    except OSError:
+        logger.warning("Could not write literature cache entry %s", path, exc_info=True)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -171,11 +192,13 @@ def inspect_search_policy(
             except (OSError, json.JSONDecodeError):
                 policy = None
 
-    matches = bool(
-        policy
-        and int(policy.get("min_year", -1)) == int(min_year)
-        and bool(policy.get("hybrid", False)) == bool(hybrid)
-    )
+    # Only the year floor enters the cache key; ``hybrid`` is recorded but a
+    # hybrid toggle reuses every primary-pass entry, so comparing it here
+    # would tell users to throw away a warm cache for no reason.
+    try:
+        matches = bool(policy and int(policy.get("min_year", -1)) == int(min_year))
+    except (TypeError, ValueError):
+        matches = False
     return {
         "cache_dir": str(d),
         "exists": d.is_dir(),
@@ -223,7 +246,14 @@ def clear_cache(*, cache_base: Path | None = None) -> int:
     d = _cache_dir(cache_base)
     count = 0
     for f in d.glob("*.json"):
-        f.unlink()
+        if f.name == _POLICY_FILE:
+            # Keep the policy record: the next fill can still tell which
+            # package filled the now-empty directory.
+            continue
+        try:
+            f.unlink()
+        except OSError:
+            continue
         count += 1
     return count
 

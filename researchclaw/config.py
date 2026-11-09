@@ -158,6 +158,9 @@ class ResearchConfig:
     foundational_results_per_query: int = 10
     #: Hard cap on foundational papers added to a run (sorted by citations).
     foundational_max_papers: int = 40
+    #: Literature-only runs (``researchclaw review``) stop after synthesis and
+    #: must not provision experiment hardware in Stage 1.
+    literature_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -270,7 +273,7 @@ class LiteratureSearchConfig:
     s2_api_key_env: str = "S2_API_KEY"
     # PubMed (NCBI E-utilities): optional key raises 3 req/s → 10 req/s
     pubmed_api_key: str = ""
-    pubmed_api_key_env: str = "PUBMED_API_KEY"
+    pubmed_api_key_env: str = "NCBI_API_KEY"
     # CORE API v3: required for the source, also supplies open-access PDF links
     core_api_key: str = ""
     core_api_key_env: str = "CORE_API_KEY"
@@ -1009,6 +1012,7 @@ class RCConfig:
                 foundational_max_papers=int(
                     research.get("foundational_max_papers", 40)
                 ),
+                literature_only=bool(research.get("literature_only", False)),
             ),
             runtime=RuntimeConfig(
                 timezone=runtime["timezone"],

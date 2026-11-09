@@ -652,9 +652,10 @@ class ColliderAgentSandbox:
         ]:
             if not src.exists():
                 continue
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
+            # Merge: ``.agents/skills`` is shared with pi and with the
+            # pipeline's own skill library, so replacing the directory would
+            # delete user/project skills.
+            _merge_copy(src, dst)
             logger.debug(
                 "ColliderAgentSandbox: installed %s → %s (project-scoped)", src, dst
             )

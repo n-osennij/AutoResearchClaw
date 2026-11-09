@@ -83,6 +83,34 @@ class TestPiAgent:
     def test_name(self) -> None:
         assert PiAgent(binary_path="pi").name == "pi"
 
+    def test_isolated_from_user_config(self) -> None:
+        cmd = PiAgent(binary_path="pi")._build_cmd("PROMPT", Path("."))
+        assert "--no-mcp" in cmd
+        assert "--no-skills" in cmd
+        assert "--no-context-files" in cmd
+
+    def test_collects_nested_files(self, tmp_path: Path) -> None:
+        from researchclaw.experiment.code_agent import _collect_py_files
+
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "main.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "main.py").write_text("y = 2\n", encoding="utf-8")
+
+        files = _collect_py_files(tmp_path)
+
+        assert files["main.py"] == "y = 2\n"
+        assert files["pkg/main.py"] == "x = 1\n"
+
+    def test_nonzero_exit_with_files_is_an_error(self, tmp_path: Path) -> None:
+        agent = PiAgent(binary_path="pi")
+        (tmp_path / "main.py").write_text("x = 1\n", encoding="utf-8")
+
+        result = agent._build_result(tmp_path, 2, "", "boom", 1.0, False)
+
+        assert result.files
+        assert result.error is not None
+        assert result.ok is False
+
 
 class TestCreateCodeAgent:
     def test_pi_provider(self, tmp_path: Path) -> None:

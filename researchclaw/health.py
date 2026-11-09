@@ -717,13 +717,22 @@ def check_acp_agent(agent_command: str) -> CheckResult:
     )
 
 
-def check_min_year(min_year: int) -> CheckResult:
-    """Remind that Stage 4 silently drops papers older than ``min_year``."""
+def check_min_year(min_year: int, hybrid: bool = False) -> CheckResult:
+    """Remind about the Stage-4 year floor, unless the hybrid pass covers it."""
     if min_year <= 0:
         return CheckResult(
             name="min_year",
             status="pass",
             detail="No publication-year cutoff (research.min_year: 0)",
+        )
+    if hybrid:
+        return CheckResult(
+            name="min_year",
+            status="pass",
+            detail=(
+                f"Primary pass starts at {min_year}; the hybrid pass adds older "
+                "foundations (research.hybrid_search)"
+            ),
         )
     return CheckResult(
         name="min_year",
@@ -732,7 +741,10 @@ def check_min_year(min_year: int) -> CheckResult:
             f"Literature search excludes papers published before {min_year} "
             f"(research.min_year: {min_year}) — old foundations will not be found"
         ),
-        fix="Set research.min_year: 0 to include older work",
+        fix=(
+            "Set research.min_year: 0 or research.hybrid_search: true to "
+            "include older work"
+        ),
     )
 
 
@@ -884,7 +896,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
                 base_url, api_key, model, fallback_models, extra_headers
             )
         )
-    checks.append(check_min_year(min_year))
+    checks.append(check_min_year(min_year, hybrid_search))
     checks.append(check_literature_cache(min_year, hybrid_search))
     checks.append(check_sandbox_python(sandbox_python_path))
     checks.append(check_matplotlib())

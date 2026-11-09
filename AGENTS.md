@@ -24,6 +24,7 @@ researchclaw init                                 # writes config.arc.yaml from 
 researchclaw validate -c config.arc.yaml
 researchclaw doctor   -c config.arc.yaml          # PASS = ready to run
 researchclaw run      -c config.arc.yaml --topic "..." --auto-approve
+researchclaw review   -c config.arc.yaml -t "..."   # Stages 1-7 + review.md only
 ```
 
 On Windows: set `experiment.sandbox.python_path` to the venv's
@@ -51,10 +52,10 @@ Everything is one YAML file; `config.yaml` overrides the example.
 | `literature_search.sources` | Any subset of `openalex`, `semantic_scholar`, `arxiv`, `openreview`, `crossref`, `pubmed`, `core`; order matters, unknown names are skipped |
 | `literature_search.*_api_key` / `*_env` | Inline wins over env. `CORE_API_KEY` is required for `core`; `S2_API_KEY` and `NCBI_API_KEY` are optional improvements; OpenAlex works keyless from a shared pool |
 | `literature_search.pubmed_domain_gate` | `true` → drop PubMed unless `research.domains` looks biomedical |
-| `research.min_year` | publication-year floor for the primary pass, default 2020; `0` = no cutoff. Doctor warns while it is active |
+| `research.min_year` | publication-year floor for the primary pass, default 2020; `0` = no cutoff. Doctor reports it as a pass while the default hybrid pass is on; it warns only when `hybrid_search: false` |
 | `research.hybrid_search` / `foundational_*` | second, unfiltered pass recovering pre-floor foundations (on by default; 10/source, cap 40) — papers tagged `year_band="foundational"`. Cache key includes `min_year`; stage 4 and doctor warn about a stale cache |
 | `literature_search.max_screen_chars` / `max_abstract_chars` / `min_shortlist` | Stage-5 screening budget. Code default 100 000 / 800 / 15 (~74 papers, ~25k tokens); the example config ships the 1M preset 600 000 / 1 200 / 25 (~345 papers, ~150k tokens) |
-| `experiment.mode` | `simulated` (fake numbers), `sandbox` (real subprocess), `docker`, `ssh_remote`, `colab_drive`, plus domain agents `collider_agent` / `biology_agent` / `stat_agent` |
+| `experiment.mode` | `simulated` (fake numbers), `sandbox` (real subprocess), `docker`, `ssh_remote`, `colab_drive`, `agentic`, plus domain agents `collider_agent` / `biology_agent` / `stat_agent` |
 | `experiment.sandbox.python_path` | Interpreter that runs generated experiment code |
 | `security.hitl_required_stages` | Gate stages (default 5, 9, 20) |
 | `prompts.extra_prompts` | Per-stage extra instructions — the supported way to steer a stage without forking |
@@ -80,10 +81,10 @@ terminal — prefer the subcommands from an agent.
 
 ## Codegen and experiment CLIs
 
-- `experiment.cli_agent.provider` accepts `llm`, `claude_code`, `codex`, `pi`.
-  `pi` runs `pi -p <prompt> --no-session --mode text --tools read,bash,edit,write`
-  in the experiment workdir; pi has no `--max-budget-usd`, so that setting is
-  ignored for it.
+- `experiment.cli_agent` is parsed and `researchclaw/experiment/code_agent.py`
+  implements `llm` / `claude_code` / `codex` / `pi` backends, but Stage 10 still
+  generates through the pipeline's LLM `CodeAgent`; the CLI backends are not
+  wired into a run yet (`create_code_agent` has no in-pipeline caller).
 - The domain experiment agents (`collider_agent`, `biology_agent`,
   `stat_agent`) shell out to `<claude_binary> -p <instruction>`. `--max-turns`
   is appended **only** for Claude binaries, so `pi`, `codex` or `opencode` can

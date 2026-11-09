@@ -24,7 +24,7 @@
   <a href="https://huggingface.co/datasets/AIMING-Lab-UNC/ARC-Bench"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-ARC--Bench-yellow" alt="ARC-Bench on Hugging Face"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/Tests-2699%20passed-brightgreen?logo=pytest&logoColor=white" alt="2699 Tests Passed"></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/Tests-3108%20passed-brightgreen?logo=pytest&logoColor=white" alt="3108 Tests Passed"></a>
   <a href="https://github.com/aiming-lab/AutoResearchClaw"><img src="https://img.shields.io/badge/GitHub-AutoResearchClaw-181717?logo=github" alt="GitHub"></a>
   <a href="#openclaw-integration"><img src="https://img.shields.io/badge/OpenClaw-Compatible-ff4444?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==" alt="OpenClaw Compatible"></a>
   <a href="https://discord.gg/u4ksqW5P"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
@@ -93,8 +93,33 @@ pip install -e . && researchclaw setup && researchclaw init && researchclaw run 
 
 # Co-Pilot mode — collaborate with AI at key decision points
 researchclaw run --topic "Your research idea here" --mode co-pilot
+
+# Literature review only — Stages 1-7, no experiments, no paper
+researchclaw review -c config.arc.yaml -t "Your research idea here"
 ```
 
+---
+
+## 📚 Literature Review Only
+
+When you only need an evidence base, run Stages 1–7 (scoping → queries →
+collection → screening → knowledge cards → synthesis) and get a single
+`review.md` instead of a paper:
+
+```bash
+researchclaw review -c config.arc.yaml -t "KV cache compression for long context"
+# artifacts/rc-<timestamp>-<hash>/review.md
+
+# re-render an existing run without searching again
+researchclaw review --run-dir artifacts/rc-...
+```
+
+The review contains: scope, the exact queries and sources, the year policy,
+the screening funnel, a shortlist table (title/year/venue/citations/relevance),
+one section per evidence card, the synthesis with research gaps, and a
+numbered reference list. Gates are auto-approved; everything else (sources,
+keys, year floor, hybrid pass, screening budget) comes from the config. See
+[`docs/LITERATURE_SEARCH.md`](docs/LITERATURE_SEARCH.md) for the knobs.
 
 ---
 
@@ -143,7 +168,7 @@ export OPENAI_API_KEY="sk-..."
 researchclaw run --config config.arc.yaml --topic "Your research idea" --auto-approve
 ```
 
-Output → `artifacts/rc-YYYYMMDD-HHMMSS-<hash>/deliverables/` — compile-ready LaTeX, BibTeX, experiment code, charts.
+Output → `artifacts/rc-YYYYMMDD-HHMMSS-<hash>/deliverables/` — compile-ready LaTeX, BibTeX, experiment code, charts. Runs started through the MCP server are named `mcp-<timestamp>-<slug>-<hash>` instead.
 
 <details>
 <summary>📝 Minimum required config</summary>
@@ -482,7 +507,7 @@ hitl:
 
 - **Default: OFF.** Without `hitl.enabled: true` or `--mode`, the pipeline behaves exactly as before.
 - **`--auto-approve` still works.** It overrides HITL mode.
-- **All 2,699 existing tests pass** with HITL code present.
+- **All 3,000+ existing tests pass** with HITL code present.
 
 ---
 
@@ -553,7 +578,7 @@ In controlled A/B experiments (same topic, same LLM, same configuration):
 
 - **Default: OFF.** If `metaclaw_bridge` is absent or `enabled: false`, the pipeline behaves exactly as before.
 - **No new dependencies.** MetaClaw is optional — the core pipeline works without it.
-- **All 2,699 existing tests pass** with the integration code present.
+- **All 3,000+ existing tests pass** with the integration code present.
 
 ---
 
@@ -615,7 +640,7 @@ project:
 research:
   topic: "..."                     # Research topic (required)
   domains: ["ml", "nlp"]           # Research domains for literature search
-  daily_paper_count: 10            # Target papers per search query
+  daily_paper_count: 0             # LLM-fallback stub candidates when real search returns nothing (min 20)
   quality_threshold: 4.0           # Minimum quality score for papers
   min_year: 2020                   # Earliest publication year for the primary Stage-4 pass (0 = no cutoff)
   hybrid_search: true              # + second pass without the floor for older foundations
@@ -658,7 +683,7 @@ literature_search:
   openalex_api_key: ""              # Optional; env var is preferred
   s2_api_key_env: "S2_API_KEY"
   s2_api_key: ""                    # Optional but recommended; falls back to llm.s2_api_key
-  pubmed_api_key_env: "PUBMED_API_KEY"
+  pubmed_api_key_env: "NCBI_API_KEY"
   pubmed_api_key: ""                # Optional; NCBI key → 10 req/s instead of 3
   core_api_key_env: "CORE_API_KEY"
   core_api_key: ""                  # Required by the "core" source; an open-access PDF supplier
@@ -666,7 +691,8 @@ literature_search:
 
 # === Experiment ===
 experiment:
-  mode: "sandbox"                  # simulated | sandbox | docker | ssh_remote
+  mode: "sandbox"                  # simulated | sandbox | docker | ssh_remote | colab_drive
+                                   # | agentic | collider_agent | biology_agent | stat_agent
   time_budget_sec: 300             # Max execution time per run (default: 300s)
   max_iterations: 10               # Max optimization iterations
   metric_key: "val_loss"           # Primary metric name
@@ -674,7 +700,7 @@ experiment:
   sandbox:
     python_path: ".venv/bin/python"
     gpu_required: false
-    allowed_imports: [math, random, json, csv, numpy, torch, sklearn]
+    allowed_imports: [math, random, json, csv, numpy, torch, sklearn]  # documentation only; not enforced
     max_memory_mb: 4096
   docker:
     image: "researchclaw/experiment:latest"
@@ -694,7 +720,7 @@ experiment:
     timeout_sec: 600                 # Max seconds for OpenCode generation
     max_retries: 1                   # Retry count on failure
     workspace_cleanup: true          # Remove temp workspace after collection
-  cli_agent:                         # Codegen backend for Stages 10 & 13
+  cli_agent:                         # Standalone CLI-codegen API (not wired into Stage 10 yet)
     provider: "llm"                  # llm | claude_code | codex | pi
     binary_path: ""                  # auto-detected via PATH if empty
     model: ""                        # CLI-specific model override
@@ -746,6 +772,7 @@ export:
 # === Prompts ===
 prompts:
   custom_file: ""                  # Path to custom prompts YAML (empty = defaults)
+  extra_prompts: {}                # stage -> extra instruction appended to that stage prompt
 
 # === HITL Co-Pilot (NEW in v0.4.0) ===
 hitl:
@@ -867,8 +894,8 @@ prerequisite is a ColliderAgent checkout at `collider_agent_dir`.
 ### Mid-stage HITL
 
 Stage 10 (CODE_GENERATION) becomes a HITL gate. The pipeline pauses with
-`collider_plan.md` open in `$EDITOR` so you can review or edit the physics
-prompt before ColliderAgent runs. Reject sends control back to Stage 9
+`collider_plan.md` written; choosing `[e] Edit` opens it in `$EDITOR` so you
+can review or edit the physics prompt before ColliderAgent runs. Reject sends control back to Stage 9
 (EXPERIMENT_DESIGN); the hypothesis from Stage 8 stays intact.
 
 ### Incremental experiments (`--incremental-experiment`)

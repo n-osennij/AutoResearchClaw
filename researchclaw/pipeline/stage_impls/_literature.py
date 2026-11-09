@@ -79,16 +79,38 @@ def _expand_search_queries(queries: list[str], topic: str) -> list[str]:
     return expanded
 
 
-def _paper_identity(paper: Any) -> str:
-    """Stable identity for cross-pass deduplication (DOI > arXiv > title)."""
+def _paper_identity_keys(paper: Any) -> set[str]:
+    """Every identifier a paper can be recognised by across search passes.
+
+    The primary and foundational passes come from different backends, so one
+    paper often arrives with a DOI in one pass and only an arXiv id (or a
+    slightly different title) in the other. Comparing one winner-only identity
+    per paper lets those copies through; comparing all three does not.
+    """
+    keys: set[str] = set()
     doi = str(getattr(paper, "doi", "") or "").strip().lower()
     if doi:
-        return f"doi:{doi}"
-    arxiv_id = str(getattr(paper, "arxiv_id", "") or "").strip()
+        keys.add(f"doi:{doi}")
+    arxiv_id = str(getattr(paper, "arxiv_id", "") or "").strip().lower()
     if arxiv_id:
-        return f"arxiv:{arxiv_id}"
-    title = " ".join(str(getattr(paper, "title", "") or "").lower().split())
-    return f"title:{title}"
+        keys.add(f"arxiv:{arxiv_id}")
+        # 1706.03762v5 and 1706.03762 are the same paper
+        arxiv_base = re.sub(r"v\d+$", "", arxiv_id)
+        keys.add(f"arxiv:{arxiv_base}")
+    title = str(getattr(paper, "title", "") or "")
+    normalised = re.sub(r"[^a-z0-9\s]", "", title.lower())
+    normalised = re.sub(r"\s+", " ", normalised).strip()
+    if normalised:
+        keys.add(f"title:{normalised}")
+    return keys
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Best-effort int conversion for hand-edited artifacts."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +463,10 @@ def _execute_literature_collect(
     queries_text = _read_prior_artifact(run_dir, "queries.json")
     queries_data = _safe_json_loads(queries_text or "{}", {})
     queries: list[str] = queries_data.get("queries", [topic])
-    year_min: int = queries_data.get("year_min", config.research.min_year)
+    year_min = _coerce_int(
+        queries_data.get("year_min", config.research.min_year),
+        config.research.min_year,
+    )
 
     # --- Try real API search first ---
     candidates: list[dict[str, Any]] = []
@@ -483,6 +508,9 @@ def _execute_literature_collect(
             tuple(str(d) for d in config.research.domains),
             gate_pubmed=literature_config.pubmed_domain_gate,
         )
+        hybrid_enabled = (
+            bool(getattr(config.research, "hybrid_search", False)) and year_min > 0
+        )
         logger.info(
             "[literature] Searching %d queries (expanded from %d) "
             "across %s",
@@ -490,14 +518,23 @@ def _execute_literature_collect(
             len(queries),
             " -> ".join(sources),
         )
-        if year_min > 0:
+        if year_min > 0 and not hybrid_enabled:
             logger.warning(
                 "[literature] YEAR FILTER ACTIVE: research.min_year=%d — "
                 "papers published before %d are excluded by every source "
                 "(pre-2020 foundations such as Transformer 2017 / Adam 2014 "
-                "will not be found). Set research.min_year: 0 to include them.",
+                "will not be found). Set research.min_year: 0 to include them, "
+                "or enable research.hybrid_search.",
                 year_min,
                 year_min,
+            )
+        elif hybrid_enabled:
+            logger.info(
+                "[literature] Year floor %d applies to the primary pass; the "
+                "hybrid pass adds pre-%d foundations (cap %d papers).",
+                year_min,
+                year_min,
+                int(getattr(config.research, "foundational_max_papers", 40)),
             )
         search_keys = SourceKeys(
             s2_api_key=s2_api_key,
@@ -506,41 +543,6 @@ def _execute_literature_collect(
             pubmed_api_key=pubmed_api_key,
             core_api_key=core_api_key,
         )
-        hybrid_enabled = (
-            bool(getattr(config.research, "hybrid_search", False)) and year_min > 0
-        )
-
-        # The cache is keyed by the year policy too; if the policy changed since
-        # it was filled, say so instead of silently mixing results.
-        try:
-            from researchclaw.literature.cache import note_search_policy
-
-            cache_state = note_search_policy(
-                min_year=year_min, hybrid=hybrid_enabled
-            )
-            previous = cache_state.get("previous")
-            if previous and (
-                int(previous.get("min_year", -1)) != year_min
-                or bool(previous.get("hybrid", False)) != hybrid_enabled
-            ):
-                logger.warning(
-                    "[literature] Literature cache was filled under a different "
-                    "year policy (min_year=%s, hybrid=%s); those entries are not "
-                    "reused. Delete %s to reclaim space.",
-                    previous.get("min_year"),
-                    previous.get("hybrid"),
-                    cache_state.get("cache_dir"),
-                )
-            if cache_state.get("legacy_entries"):
-                logger.warning(
-                    "[literature] %d cache entries predate year-policy tracking "
-                    "and are no longer reused. Delete %s to reclaim space.",
-                    cache_state.get("entries", 0),
-                    cache_state.get("cache_dir"),
-                )
-        except Exception:  # noqa: BLE001 - cache policy must never block a run
-            logger.debug("Cache policy check skipped", exc_info=True)
-
         papers = search_papers_multi_query(
             expanded_queries,
             limit_per_query=literature_config.max_results_per_query,
@@ -554,58 +556,105 @@ def _execute_literature_collect(
             # Second pass without the year floor: it recovers the foundational
             # papers the filtered ranking pushed out. Only papers older than the
             # floor are kept, capped and sorted by citations, so the recent
-            # cohort is not crowded out.
-            try:
-                found_limit = max(
-                    1,
-                    int(
-                        getattr(
-                            config.research, "foundational_results_per_query", 10
-                        )
-                    ),
-                )
-                found_cap = max(
-                    0, int(getattr(config.research, "foundational_max_papers", 40))
-                )
+            # cohort is not crowded out. A cap or per-query limit of 0 disables
+            # the pass outright instead of paying for a search that adds nothing.
+            found_cap = _coerce_int(
+                getattr(config.research, "foundational_max_papers", 40), 40
+            )
+            found_limit = _coerce_int(
+                getattr(config.research, "foundational_results_per_query", 10), 10
+            )
+            if found_cap <= 0 or found_limit <= 0:
                 logger.info(
-                    "[literature] Hybrid foundational pass: %d queries without "
-                    "the year filter (limit %d/source, cap %d papers)",
-                    len(queries),
-                    found_limit,
+                    "[literature] Hybrid foundational pass skipped "
+                    "(cap=%d, results/query=%d)",
                     found_cap,
+                    found_limit,
                 )
-                older = search_papers_multi_query(
-                    queries or expanded_queries,
-                    limit_per_query=found_limit,
-                    sources=sources,
-                    year_min=0,
-                    keys=search_keys,
-                    inter_query_delay=literature_config.inter_query_delay_sec,
+            else:
+                try:
+                    logger.info(
+                        "[literature] Hybrid foundational pass: %d queries "
+                        "without the year filter (limit %d/source, cap %d papers)",
+                        len(expanded_queries or queries),
+                        found_limit,
+                        found_cap,
+                    )
+                    older = search_papers_multi_query(
+                        expanded_queries or queries,
+                        limit_per_query=found_limit,
+                        sources=sources,
+                        year_min=0,
+                        keys=search_keys,
+                        inter_query_delay=literature_config.inter_query_delay_sec,
+                    )
+                    seen: set[str] = set()
+                    for paper in papers:
+                        seen |= _paper_identity_keys(paper)
+                    for paper in older:
+                        if len(foundational_papers) >= found_cap:
+                            break
+                        if not paper.year or paper.year >= year_min:
+                            continue
+                        paper_keys = _paper_identity_keys(paper)
+                        if paper_keys & seen:
+                            continue
+                        seen |= paper_keys
+                        foundational_papers.append(paper)
+                    # Merge in citation order: the char cap in Stage 5 keeps
+                    # the head of the list, and appending would put every
+                    # foundation last (and first to be truncated).
+                    papers = sorted(
+                        papers + foundational_papers,
+                        key=lambda p: (
+                            getattr(p, "citation_count", 0) or 0,
+                            getattr(p, "year", 0) or 0,
+                        ),
+                        reverse=True,
+                    )
+                    logger.info(
+                        "[literature] Hybrid pass added %d foundational papers "
+                        "(published before %d)",
+                        len(foundational_papers),
+                        year_min,
+                    )
+                except Exception:  # noqa: BLE001 - keep the primary results
+                    logger.warning(
+                        "Hybrid foundational pass failed — continuing with the "
+                        "primary search results",
+                        exc_info=True,
+                    )
+        # Record the policy only after a successful fill, so an aborted run
+        # does not label the cache with a policy it never filled. There is no
+        # need to compare ``hybrid``: it does not enter the cache key.
+        if papers:
+            try:
+                from researchclaw.literature.cache import note_search_policy
+
+                cache_state = note_search_policy(
+                    min_year=year_min, hybrid=hybrid_enabled
                 )
-                seen = {_paper_identity(paper) for paper in papers}
-                for paper in older:
-                    if len(foundational_papers) >= found_cap:
-                        break
-                    if not paper.year or paper.year >= year_min:
-                        continue
-                    ident = _paper_identity(paper)
-                    if ident in seen:
-                        continue
-                    seen.add(ident)
-                    foundational_papers.append(paper)
-                papers = papers + foundational_papers
-                logger.info(
-                    "[literature] Hybrid pass added %d foundational papers "
-                    "(published before %d)",
-                    len(foundational_papers),
-                    year_min,
-                )
-            except Exception:  # noqa: BLE001 - keep the primary results
-                logger.warning(
-                    "Hybrid foundational pass failed — continuing with the "
-                    "primary search results",
-                    exc_info=True,
-                )
+                previous = cache_state.get("previous")
+                if previous and _coerce_int(
+                    previous.get("min_year", -1), -1
+                ) != year_min:
+                    logger.warning(
+                        "[literature] Literature cache was filled under a "
+                        "different year policy (min_year=%s); those entries are "
+                        "not reused. Delete %s to reclaim space.",
+                        previous.get("min_year"),
+                        cache_state.get("cache_dir"),
+                    )
+                if cache_state.get("legacy_entries"):
+                    logger.warning(
+                        "[literature] %d cache entries predate year-policy "
+                        "tracking and are no longer reused. Delete %s to "
+                        "reclaim space.",
+                        cache_state.get("entries", 0),
+                        cache_state.get("cache_dir"),
+                    )
+            except Exception:  # noqa: BLE001 - cache policy must never block a run
+                logger.debug("Cache policy check skipped", exc_info=True)
         if papers:
             real_search_succeeded = True
             # Count by source
@@ -837,11 +886,18 @@ def _execute_literature_collect(
                 "year_filter": {
                     "min_year": year_min,
                     "active": year_min > 0,
+                    "hybrid": hybrid_enabled,
                     "hint": (
-                        f"papers published before {year_min} are excluded by "
-                        "every source; set research.min_year: 0 to include them"
-                        if year_min > 0
-                        else "no publication-year cutoff"
+                        f"the primary pass excludes papers before {year_min}; "
+                        "the hybrid pass adds older foundations "
+                        f"(cap {int(getattr(config.research, 'foundational_max_papers', 40))})"
+                        if hybrid_enabled
+                        else (
+                            f"papers published before {year_min} are excluded by "
+                            "every source; set research.min_year: 0 to include them"
+                            if year_min > 0
+                            else "no publication-year cutoff"
+                        )
                     ),
                 },
                 "hybrid_search": {

@@ -624,10 +624,16 @@ def test_check_acpx_found(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_check_min_year_warns_for_active_cutoff() -> None:
-    result = health.check_min_year(2020)
+    result = health.check_min_year(2020, hybrid=False)
     assert result.status == "warn"
     assert "before 2020" in result.detail
-    assert "research.min_year: 0" in result.fix
+    assert "hybrid_search" in result.fix
+
+
+def test_check_min_year_passes_when_hybrid_covers_it() -> None:
+    result = health.check_min_year(2020, hybrid=True)
+    assert result.status == "pass"
+    assert "hybrid pass adds older foundations" in result.detail
 
 
 def test_check_min_year_passes_when_disabled() -> None:

@@ -992,6 +992,83 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    """Literature-only run (Stages 1-7) plus a rendered review document."""
+    from researchclaw.review import write_literature_review
+
+    run_dir_arg = cast(str | None, getattr(args, "run_dir", None))
+    topic = cast(str | None, getattr(args, "topic", None)) or ""
+    output = cast(str | None, getattr(args, "output", None))
+    exit_code = 0
+
+    if run_dir_arg:
+        run_dir = Path(run_dir_arg)
+        if not run_dir.is_dir():
+            print(f"Error: run directory not found: {run_dir}", file=sys.stderr)
+            return 1
+    else:
+        resolved = _resolve_config_or_exit(args)
+        if resolved is None:
+            return 1
+
+        import dataclasses as _dc
+
+        from researchclaw.adapters import AdapterBundle
+        from researchclaw.pipeline.runner import execute_pipeline
+        from researchclaw.pipeline.stages import Stage, StageStatus
+
+        config = RCConfig.load(resolved, check_paths=False)
+        overrides: dict[str, object] = {"literature_only": True}
+        if topic:
+            overrides["topic"] = topic
+        config = _dc.replace(
+            config, research=_dc.replace(config.research, **overrides)
+        )
+        topic = config.research.topic
+
+        run_dir = (
+            Path(output)
+            if output
+            else Path("artifacts") / _generate_run_id(topic)
+        )
+        run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Literature review run: {run_dir}")
+
+        results = execute_pipeline(
+            run_dir=run_dir,
+            run_id=run_dir.name,
+            config=config,
+            adapters=AdapterBundle(),
+            to_stage=Stage.SYNTHESIS,
+            auto_approve_gates=True,
+        )
+        unfinished = [
+            result for result in results if result.status != StageStatus.DONE
+        ]
+        if unfinished:
+            print(
+                "Warning: "
+                + ", ".join(
+                    f"{result.stage.name}={result.status.value}"
+                    for result in unfinished
+                ),
+                file=sys.stderr,
+            )
+            # PAUSED (uniform reject-all at Stage 5/6) and FAILED runs still
+            # produce a document from whatever artifacts exist, but the exit
+            # code must say the run did not complete.
+            exit_code = 2
+
+    try:
+        review_path = write_literature_review(Path(run_dir), topic=topic)
+    except OSError as exc:
+        print(f"Error: cannot write the review: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Review written to {review_path}")
+    return exit_code
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     from researchclaw.report import generate_report, write_report
 
@@ -1311,6 +1388,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override project.profile for this invocation",
     )
 
+    rev_p = sub.add_parser(
+        "review", help="Run only the literature review (Stages 1-7) and render it"
+    )
+    _ = rev_p.add_argument(
+        "--config", "-c", default=None,
+        help="Config file (default: auto-detect config.arc.yaml or config.yaml)",
+    )
+    _ = rev_p.add_argument("--topic", "-t", help="Override research topic")
+    _ = rev_p.add_argument(
+        "--output", "-o", help="Run directory (default: artifacts/rc-...)"
+    )
+    _ = rev_p.add_argument(
+        "--run-dir",
+        default=None,
+        help="Render the review from an existing run without running the pipeline",
+    )
+
     rpt_p = sub.add_parser("report", help="Generate human-readable run report")
     _ = rpt_p.add_argument(
         "--run-dir", required=True, help="Path to run artifacts directory"
@@ -1536,6 +1630,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_setup(args)
     elif command == "info":
         return cmd_info(args)
+    elif command == "review":
+        return cmd_review(args)
     elif command == "report":
         return cmd_report(args)
     elif command == "serve":

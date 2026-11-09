@@ -73,6 +73,7 @@ Three stages require approval (use `--auto-approve` for fully autonomous mode):
 | User provides a clear topic | Run full pipeline with `--auto-approve` |
 | User wants to review stages | Run without `--auto-approve`, pause at gates |
 | Pipeline fails at a stage | Check error, fix config or retry from that stage with `--from-stage` |
+| User wants only a literature review | `researchclaw review -c config.yaml -t "topic"` (Stages 1–7, writes `review.md`) |
 | User wants iteration | Use `execute_iterative_pipeline()` with `max_iterations` |
 | Experiment code fails | Validator auto-retries up to 3 times; if still failing, switch to `simulated` mode |
 

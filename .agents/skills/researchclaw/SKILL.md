@@ -88,6 +88,10 @@ researchclaw run -c config.arc.yaml --to-stage HYPOTHESIS_GEN --auto-approve
 
 # resume the newest run for the same topic
 researchclaw run -c config.arc.yaml --resume --auto-approve
+
+# literature review only (Stages 1-7, no experiments/paper)
+researchclaw review -c config.arc.yaml -t "topic"
+# -> artifacts/<run>/review.md; re-render with --run-dir artifacts/<run>
 ```
 
 Long runs: start with `nohup`/background and poll
@@ -117,7 +121,7 @@ artifacts/<run>/
 ├── stage-03/queries.json              # search queries + year_min
 ├── stage-04/candidates.jsonl          # collected literature (pdf_url, year_band)
 ├── stage-04/search_meta.json          # per-source counts, cache hits
-├── stage-05/screen_meta.json          # candidates screened, shortlist size
+├── stage-05/screen_meta.json          # only on the reject-all pause (screened/rejected counts)
 ├── stage-05/shortlist.jsonl           # papers kept for extraction
 ├── stage-06/cards/                    # knowledge cards (one per shortlisted paper)
 ├── stage-12/runs/…                    # generated code + per-run results.json
@@ -158,7 +162,8 @@ Full guide: `docs/LITERATURE_SEARCH.md` (flow, source keys, capacity math, cache
   | 1M (example config) | 600 000 | 1 200 | ~345 | ~150k |
 
   Longer abstracts cost slots (600k holds ~448 papers at 800 chars vs ~345 at
-  1 200). Past ~400–500 papers in one call, precision drops — batch instead.
+  1 200). Past ~400–500 papers the single Stage-5 call only sees the head; raising
+  the cap is a deliberate trade, not a batching feature.
 - **Shortlist:** the target is `min_shortlist` papers (code default 15, 25 in
   the example config; backfilled from the prefiltered set if the model returns
   fewer; an empty model verdict pauses the stage).
@@ -168,7 +173,7 @@ Full guide: `docs/LITERATURE_SEARCH.md` (flow, source keys, capacity math, cache
   `research.hybrid_search` adds a second, unfiltered pass for older work, capped
   at 40 papers and tagged `year_band="foundational"`. The screener is told to
   keep foundations only when they define the problem/metric/baseline, so recent
-  work is not crowded out. 31 curated classics
+  work is not crowded out. 30 curated classics
   (`researchclaw/data/seminal_papers.yaml`) are injected regardless.
   Verify a run:
   `grep -c '"year_band": "foundational"' artifacts/<run>/stage-04/candidates.jsonl`.
