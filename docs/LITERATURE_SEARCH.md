@@ -81,6 +81,29 @@ The example config ships the 1M preset (600 000 / 1 200 / 25) and
 per paper but cost slots (600k holds ~448 papers at 800 chars vs ~345 at
 1 200); past ~400–500 papers, raising the cap is a deliberate trade: Stage 5 makes a single call, so the truncated tail is never screened.
 
+### What the screener actually answers
+
+Stage 5 hands the model numbered candidate lines and asks for a compact
+`{shortlist: [{index, relevance_score, quality_score, keep_reason}]}` — the
+pipeline re-attaches the title, abstract and provenance fields from the
+candidate at that `index`. Earlier it asked the model to echo every field back,
+which a reasoning model answers by spending its whole output budget on
+reasoning plus row copies; the JSON then truncated and the stage silently
+replaced the shortlist with template rows (`"parse_failed": true` in
+`screen_meta.json`, `"template_fallback": true`). Two consequences worth
+knowing:
+
+- `screen_raw.txt` appears in `stage-05/` when the reply was still unusable —
+  that file is the model's actual answer, kept because "truncated" and "answered
+  prose" look identical in the metadata.
+- scores are normalised on read: a reply of `9.5` out of 10 becomes `0.95`, so a
+  model that ignores the 0-1 scale cannot reorder the shortlist.
+
+Stage 6 (`knowledge_extract`) works the same way and keeps its own
+`stage-06/cards_raw.txt`; it turns the twelve strongest rows into one card each,
+one clause per field. If cards say "Template method summary", the model never
+answered — check that file before blaming the prompt.
+
 ### Literature cache
 
 Search results are cached in `.researchclaw_cache/literature/` with per-source
