@@ -126,6 +126,7 @@ llm:
   fallback_models:                           # Tried in order if primary fails
     - "gpt-4.1"
     - "gpt-4o-mini"
+  extra_headers: {}                          # Optional: fixed HTTP headers (see below)
   s2_api_key: ""                             # Optional: Semantic Scholar API key for higher rate limits
 ```
 
@@ -147,6 +148,52 @@ llm:
   api_key: "your-proxy-key"
   primary_model: "gpt-4o"    # Must be supported by your endpoint
 ```
+
+**Gateways that require routing headers** — some OpenAI-compatible endpoints
+reject requests that lack metadata. `llm.extra_headers` sends fixed headers on
+every chat request *and* on `researchclaw doctor` probes, so a green doctor
+result means the pipeline will also get through:
+
+```yaml
+llm:
+  extra_headers:
+    x-opencode-session: "auto"   # "auto" → fresh researchclaw-<hex> id per LLM client
+```
+
+Without that header OpenCode Go fails every call with `400 MissingSessionID`,
+and doctor misreports the key as invalid (`api_key_valid: 403`). Each client
+(generator, reviewer, every debate role) resolves its own id — they are
+separate sessions by design.
+
+### Literature Sources and API Keys (Optional)
+
+Stage 4 queries the backends listed in `literature_search.sources`, in order.
+Any subset of these seven works; unknown names are skipped with a warning:
+
+| Source | What it adds | Key |
+|---|---|---|
+| `openalex` | metadata + citation counts, cheap and broad | `OPENALEX_API_KEY` optional (metered); without it a shared per-IP pool |
+| `semantic_scholar` | citation counts, strongest ML coverage | `S2_API_KEY` optional but recommended — unauthenticated S2 trips its 429 circuit breaker |
+| `arxiv` | preprints | none |
+| `openreview` | ICLR/NeurIPS submissions with PDFs | none |
+| `crossref` | publisher metadata (ACM/IEEE/Springer/Elsevier) + DOI | none; reuses `openalex_email` |
+| `pubmed` | MEDLINE | `NCBI_API_KEY` optional — raises 3 → 10 req/s |
+| `core` | open-access full text | `CORE_API_KEY` **required** (free at <https://core.ac.uk/services/api>) |
+
+```yaml
+literature_search:
+  sources: ["openalex", "semantic_scholar", "arxiv", "openreview", "crossref"]
+  openalex_email: "you@example.com"     # polite-pool contact
+  s2_api_key_env: "S2_API_KEY"          # keys may live in env vars (preferred)...
+  core_api_key: ""                     # ...or inline (inline wins)
+  pubmed_domain_gate: true             # drop PubMed unless research.domains is biomedical
+```
+
+Open-access `pdf_url` links captured by any source are handed to the PDF
+extractor when `web_search.enable_pdf_extraction` is on (needs
+`pip install "researchclaw[pdf]"`); extracted text lands in
+`stage-04/web_context.md`. `inter_query_delay_sec` paces queries, per-source
+pacing (1 req/s for S2 and OpenReview) is built in.
 
 ### Research Settings
 

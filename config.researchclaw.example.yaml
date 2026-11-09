@@ -44,9 +44,13 @@ llm:
   fallback_models:
     - "gpt-4.1"
     - "gpt-4o-mini"
-  # Extra request headers for every LLM call. Some gateways require routing
-  # metadata; the literal value "auto" is replaced with a random per-client
-  # session id.
+  # Extra HTTP headers sent with every LLM request. Needed by gateways that
+  # route on headers: OpenCode Go answers "400 MissingSessionID" without
+  # `x-opencode-session`. The same headers are sent by `researchclaw doctor`
+  # probes, so a passing probe means a working pipeline call.
+  # The literal value "auto" becomes a fresh `researchclaw-<hex>` id per LLM
+  # client (generator, reviewer and each debate role resolve their own — that
+  # is intended: every client is its own session).
   # extra_headers:
   #   x-opencode-session: "auto"
   # --- MiniMax provider example (global OpenAI-compatible endpoint) ---
@@ -77,20 +81,37 @@ llm:
   #   - "mistral"
 
 literature_search:
-  # Stage 4 academic search backends, tried in this order. All of them are
-  # free; only "core" strictly needs an API key.
-  #   openalex         — metadata + citation counts, polite pool via email
+  # Stage 4 academic search backends, tried in the order listed. All are free;
+  # only "core" needs a key to work at all. Unknown names are skipped with a
+  # warning, `s2` is accepted as an alias for `semantic_scholar`.
+  #   openalex         — metadata + citation counts; polite pool via email
   #   semantic_scholar — citation counts, strongest ML coverage
   #   arxiv            — preprints
   #   openreview       — conference submissions (ICLR/NeurIPS ...) with PDFs
   #   crossref         — publisher metadata (ACM/IEEE/Springer/Elsevier) + DOI
   #   pubmed           — MEDLINE; biomedical only, see pubmed_domain_gate
-  #   core             — open-access full text, the only source setting pdf_url
+  #   core             — open-access full text; main supplier of pdf_url
+  # Keys live in the matching `*_api_key` field or in the env var named by
+  # `*_env` (inline wins). For Semantic Scholar the chain is
+  # `literature_search.s2_api_key` → `llm.s2_api_key` → `S2_API_KEY` env.
+  # What each one buys:
+  #   OPENALEX_API_KEY  optional + metered; without it OpenAlex answers from a
+  #                     shared per-IP pool (0.10 USD/day)
+  #   S2_API_KEY        optional but recommended: unauthenticated S2 trips its
+  #                     429 circuit breaker within a few queries
+  #   NCBI_API_KEY      optional; raises PubMed from 3 to 10 requests/second
+  #   CORE_API_KEY      REQUIRED by the "core" source (free at core.ac.uk)
+  #   openalex_email    polite-pool contact; also sent to Crossref and PubMed
+  # Open-access pdf_url links captured by any source are handed to the PDF
+  # extractor when web_search.enable_pdf_extraction is on (needs PyMuPDF), so
+  # full text reaches stage 4 instead of titles and abstracts only.
   sources:
     - "openalex"
     - "semantic_scholar"
     - "arxiv"
   max_results_per_query: 40
+  # Pause between expanded queries. Per-source pauses (S2/OpenReview 1 req/s,
+  # the rest faster) are built into researchclaw/literature/search.py.
   inter_query_delay_sec: 1.5
   openalex_email: "researchclaw@users.noreply.github.com"
   openalex_api_key_env: "OPENALEX_API_KEY"

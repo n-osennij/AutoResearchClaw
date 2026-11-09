@@ -102,12 +102,12 @@ researchclaw run --topic "Your research idea here" --mode co-pilot
 
 **You think it. AutoResearchClaw writes it. You guide the key decisions.**
 
-Drop a research topic — get back a full academic paper with real literature from OpenAlex, Semantic Scholar & arXiv, hardware-aware sandbox experiments (GPU/MPS/CPU auto-detected), statistical analysis, multi-agent peer review, and conference-ready LaTeX targeting NeurIPS/ICML/ICLR. Run it fully autonomous, or use **Co-Pilot mode** to guide the AI at critical decision points — choose research directions, review experiment designs, and co-write the paper. No hallucinated references.
+Drop a research topic — get back a full academic paper with real literature from OpenAlex, Semantic Scholar, arXiv, OpenReview, Crossref, PubMed and CORE, hardware-aware sandbox experiments (GPU/MPS/CPU auto-detected), statistical analysis, multi-agent peer review, and conference-ready LaTeX targeting NeurIPS/ICML/ICLR. Run it fully autonomous, or use **Co-Pilot mode** to guide the AI at critical decision points — choose research directions, review experiment designs, and co-write the paper. No hallucinated references.
 
 <table>
 <tr><td>📄</td><td><code>paper_draft.md</code></td><td>Full academic paper (Introduction, Related Work, Method, Experiments, Results, Conclusion)</td></tr>
 <tr><td>📐</td><td><code>paper.tex</code></td><td>Conference-ready LaTeX (NeurIPS / ICLR / ICML templates)</td></tr>
-<tr><td>📚</td><td><code>references.bib</code></td><td>Real BibTeX references from OpenAlex, Semantic Scholar and arXiv — auto-pruned to match inline citations</td></tr>
+<tr><td>📚</td><td><code>references.bib</code></td><td>Real BibTeX references from OpenAlex, Semantic Scholar, arXiv, OpenReview, Crossref, PubMed and CORE — auto-pruned to match inline citations</td></tr>
 <tr><td>🔍</td><td><code>verification_report.json</code></td><td>4-layer citation integrity + relevance verification (arXiv, CrossRef, DataCite, LLM)</td></tr>
 <tr><td>🧪</td><td><code>experiment runs/</code></td><td>Generated code + sandbox results + structured JSON metrics</td></tr>
 <tr><td>📊</td><td><code>charts/</code></td><td>Auto-generated condition comparison charts with error bars and confidence intervals</td></tr>
@@ -332,7 +332,7 @@ Phase D: Experiment Design         Phase H: Finalization
 
 | Feature | Description |
 |---------|------------|
-| **📚 Multi-Source Literature** | Real papers from OpenAlex, Semantic Scholar & arXiv — plus opt-in OpenReview, Crossref, PubMed and CORE (the only one returning open-access PDF links). Query expansion, cross-source deduplication, retry with `Retry-After`, circuit breaker with graceful degradation |
+| **📚 Multi-Source Literature** | Real papers from seven backends — OpenAlex, Semantic Scholar and arXiv by default, plus opt-in OpenReview, Crossref, PubMed and CORE. Query expansion, cross-source deduplication, retry with `Retry-After`, circuit breaker with graceful degradation, open-access `pdf_url` capture feeding full-text extraction |
 | **🔍 4-Layer Citation Verification** | arXiv ID check → CrossRef/DataCite DOI → Semantic Scholar title match → LLM relevance scoring. Hallucinated refs auto-removed. |
 | **🖥️ Hardware-Aware Execution** | Auto-detects GPU (NVIDIA CUDA / Apple MPS / CPU-only) and adapts code generation, imports, and experiment scale accordingly |
 | **🦾 OpenCode Beast Mode** | Complex experiments auto-routed to [OpenCode](https://github.com/anomalyco/opencode) — generates multi-file projects with custom architectures, training loops, and ablation studies. Install via `researchclaw setup`. |
@@ -607,6 +607,9 @@ llm:
   api_key: ""                      # Or hardcode key here
   primary_model: "gpt-4o"          # Primary model
   fallback_models: ["gpt-4o-mini"] # Fallback chain
+  extra_headers: {}                # Fixed headers on every request; "auto" → per-client session id
+                                   #   Gateways that route on headers need this, e.g. OpenCode Go:
+                                   #   extra_headers: {x-opencode-session: auto}  (else 400 MissingSessionID)
   s2_api_key: ""                   # Semantic Scholar API key (optional, higher rate limits)
   acp:                             # Only used when provider: "acp"
     agent: "claude"                # ACP agent CLI command (claude, codex, gemini, etc.)
@@ -614,18 +617,18 @@ llm:
 
 # === Literature search ===
 literature_search:
-  sources: ["openalex", "semantic_scholar", "arxiv"]  # Stage 4 backend order
+  sources: ["openalex", "semantic_scholar", "arxiv"]  # Subset of the 7 backends below, in call order
   max_results_per_query: 40          # Results per query before deduplication
-  inter_query_delay_sec: 1.5         # Delay between expanded queries
+  inter_query_delay_sec: 1.5         # Delay between expanded queries (per-source pacing is built in)
   openalex_email: "researchclaw@users.noreply.github.com"
   openalex_api_key_env: "OPENALEX_API_KEY"
   openalex_api_key: ""              # Optional; env var is preferred
   s2_api_key_env: "S2_API_KEY"
-  s2_api_key: ""                    # Optional; falls back to llm.s2_api_key
+  s2_api_key: ""                    # Optional but recommended; falls back to llm.s2_api_key
   pubmed_api_key_env: "PUBMED_API_KEY"
   pubmed_api_key: ""                # Optional; NCBI key → 10 req/s instead of 3
   core_api_key_env: "CORE_API_KEY"
-  core_api_key: ""                  # Required by the "core" source; adds pdf_url
+  core_api_key: ""                  # Required by the "core" source; an open-access PDF supplier
   pubmed_domain_gate: false         # true → skip PubMed unless research.domains is biomedical
 
 # === Experiment ===
@@ -763,6 +766,41 @@ openclaw_bridge:
   use_sessions_spawn: false        # Spawn parallel sub-sessions
   use_web_fetch: false             # Live web search
   use_browser: false               # Browser-based paper collection
+```
+
+**Literature sources and their keys.** Stage 4 queries any subset of seven
+backends; list them in `literature_search.sources` (order matters, unknown
+names are skipped). Keys go inline (`*_api_key`) or into the env var named by
+`*_env` — inline wins.
+
+| Source | What it adds | Key |
+|---|---|---|
+| `openalex` | metadata + citation counts; cheap and broad | `OPENALEX_API_KEY` optional (metered); without it a shared per-IP pool |
+| `semantic_scholar` | citation counts, strongest ML coverage | `S2_API_KEY` optional, recommended — unauthenticated S2 trips its 429 circuit breaker |
+| `arxiv` | preprints | none |
+| `openreview` | ICLR/NeurIPS submissions with PDFs | none |
+| `crossref` | publisher metadata (ACM/IEEE/Springer/Elsevier) + DOI | none; `openalex_email` is reused as the polite contact |
+| `pubmed` | MEDLINE | `NCBI_API_KEY` optional — raises 3 → 10 req/s |
+| `core` | open-access full text | `CORE_API_KEY` **required** (free at <https://core.ac.uk/services/api>) |
+
+`pubmed_domain_gate: true` drops PubMed unless `research.domains` looks
+biomedical — its word-level query translation floods an ML topic with
+irrelevant clinical hits. Open-access `pdf_url` links captured by any source
+are passed to the PDF extractor when `web_search.enable_pdf_extraction` is on
+(pip extra `pdf`) and the extracted text lands in `stage-04/web_context.md`.
+
+**Gateways that route on headers.** Some OpenAI-compatible endpoints reject
+requests without routing metadata, and `researchclaw doctor` probes the same
+path. `llm.extra_headers` sends fixed headers on every request and on doctor
+probes; the value `auto` becomes a fresh `researchclaw-<hex>` session id per
+LLM client. OpenCode Go, for example, needs `x-opencode-session` — without it
+every call fails with `400 MissingSessionID` and doctor reports a misleading
+`api_key_valid: 403`:
+
+```yaml
+llm:
+  extra_headers:
+    x-opencode-session: "auto"
 ```
 
 MiniMax presets use `MINIMAX_API_KEY`, `MiniMax-M3` as the primary model,

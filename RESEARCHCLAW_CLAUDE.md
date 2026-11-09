@@ -119,6 +119,11 @@ Key sections:
 - `project.name` / `project.mode` — Project identity
 - `research.topic` — The research question
 - `llm.base_url` / `llm.api_key` / `llm.primary_model` — LLM provider
+- `llm.extra_headers` — fixed HTTP headers on every LLM request; the value `auto` becomes a fresh per-client session id. Gateways that route on headers need this (OpenCode Go: `x-opencode-session: auto`, otherwise `400 MissingSessionID`; `researchclaw doctor` probes the same headers)
+- `literature_search.sources` — any subset of `openalex`, `semantic_scholar`, `arxiv`, `openreview`, `crossref`, `pubmed`, `core` (order matters, unknown names skipped)
+- `literature_search.*_api_key` / `*_env` — source credentials; `CORE_API_KEY` is required for `core`, `S2_API_KEY` and `NCBI_API_KEY` are optional improvements, OpenAlex works without a key from a shared pool
+- `literature_search.pubmed_domain_gate` — when true, PubMed is skipped unless `research.domains` is biomedical
+- `web_search.enable_pdf_extraction` — feed open-access `pdf_url` links to the PDF extractor (needs the `pdf` extra)
 - `experiment.mode` — `simulated`, `sandbox`, `docker`, `ssh_remote`, or `colab_drive`
 - `experiment.sandbox.python_path` — Python interpreter for sandbox mode
 - `security.hitl_required_stages` — Gate stage numbers (default: [5, 9, 20])
