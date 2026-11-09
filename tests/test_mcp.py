@@ -168,7 +168,13 @@ class TestMCPServer:
         assert result["success"] is False
         assert "Unknown to_stage" in result["error"]
 
-    def test_handle_run_pipeline_without_config(self, tmp_path: Path) -> None:
+    def test_handle_run_pipeline_without_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The tool searches the cwd for config.arc.yaml / config.yaml; a
+        # developer's gitignored local config used to turn this "no config"
+        # assertion into a real 3-minute pipeline run.
+        monkeypatch.chdir(tmp_path)
         server = ResearchClawMCPServer(artifacts_root=tmp_path / "artifacts")
         result = asyncio.run(server.handle_tool_call("run_pipeline", {"topic": "GNN"}))
         assert result["success"] is False

@@ -174,3 +174,73 @@ class TestYearReminder:
             assert str(min_year) in meta["year_filter"]["hint"]
         else:
             assert meta["year_filter"]["hint"] == "no publication-year cutoff"
+
+
+class TestScreenerRetry:
+    """A reasoning model can answer "" with finish_reason="length"."""
+
+    def _setup(self, tmp_path: Path, rows: int = 5) -> tuple[Path, Path, RCConfig]:
+        from researchclaw.pipeline.stage_impls import _literature as lit  # noqa: F401
+
+        run_dir = tmp_path / "run"
+        (run_dir / "stage-04").mkdir(parents=True)
+        stage_dir = run_dir / "stage-05"
+        stage_dir.mkdir()
+        candidates = [
+            {"paper_id": f"pmid:{i}", "title": f"Transformer attention paper {i}", "pmid": str(i)}
+            for i in range(rows)
+        ]
+        (run_dir / "stage-04" / "candidates.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in candidates), encoding="utf-8"
+        )
+        return stage_dir, run_dir, _config(tmp_path, min_shortlist=2)
+
+    def test_empty_reply_is_retried_with_a_bigger_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.pipeline.stage_impls import _literature as lit
+
+        stage_dir, run_dir, config = self._setup(tmp_path)
+        budgets: list[int] = []
+
+        def fake_chat(llm: Any, system: str, user: str, **kwargs: Any) -> Any:
+            budgets.append(kwargs.get("max_tokens") or 0)
+            if len(budgets) == 1:  # reasoning ate the whole budget
+                return SimpleNamespace(content="", finish_reason="length", truncated=True)
+            return SimpleNamespace(
+                content=json.dumps(
+                    {"shortlist": [{"index": 1, "relevance_score": 0.9}]}
+                ),
+                finish_reason="stop",
+                truncated=False,
+            )
+
+        monkeypatch.setattr(lit, "_chat_with_prompt", fake_chat)
+        result = lit._execute_literature_screen(
+            stage_dir, run_dir, config, AdapterBundle(), llm=object()
+        )
+        assert result.status == StageStatus.DONE
+        assert len(budgets) == 2 and budgets[1] > budgets[0]
+        meta = json.loads((stage_dir / "screen_meta.json").read_text(encoding="utf-8"))
+        assert meta["parse_failed"] is False
+        shortlist = [
+            json.loads(line)
+            for line in (stage_dir / "shortlist.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert shortlist[0]["pmid"] == "0"
+
+    def test_unparsable_reply_keeps_the_raw_response(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.pipeline.stage_impls import _literature as lit
+
+        stage_dir, run_dir, config = self._setup(tmp_path)
+
+        def fake_chat(llm: Any, system: str, user: str, **kwargs: Any) -> Any:
+            return SimpleNamespace(content="Sure! Here is my screen:", finish_reason="stop")
+
+        monkeypatch.setattr(lit, "_chat_with_prompt", fake_chat)
+        lit._execute_literature_screen(stage_dir, run_dir, config, AdapterBundle(), llm=object())
+        raw = (stage_dir / "screen_raw.txt").read_text(encoding="utf-8")
+        assert raw.startswith("Sure! Here is my screen")

@@ -834,7 +834,7 @@ stages:
       property prediction'.
     user: |-
       Perform merged relevance+quality screening and return shortlist.
-      Return JSON: {shortlist:[...]} each with title, cite_key (if present), relevance_score (0-1), quality_score (0-1), keep_reason.
+      Return JSON: {shortlist:[{index, relevance_score, quality_score, keep_reason}]} where `index` is the integer `index` field of the candidate line you keep. Do NOT echo titles, abstracts or metadata: the pipeline re-attaches them from the candidate by index, and an echoing answer spends the output budget on nothing until the JSON truncates.
       Preserve all original fields (paper_id, doi, arxiv_id, cite_key, pmid, is_preprint, pub_types, concern, etc.) from the input.
       Papers tagged year_band="foundational" predate the recent window (research.min_year): keep them only when they define the problem, a metric, or a baseline; otherwise prefer recent work.
       Topic: {topic}
@@ -852,7 +852,7 @@ stages:
       Candidates JSONL:
       {candidates_text}
     json_mode: true
-    max_tokens: 8192
+    max_tokens: 16384
   knowledge_extract:
     system: You extract high-signal evidence cards from papers.
     user: |-

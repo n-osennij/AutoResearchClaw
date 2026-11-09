@@ -421,3 +421,39 @@ class TestStaleCards:
             lit._chat_with_prompt = original  # type: ignore[assignment]
         assert result.status == StageStatus.DONE
         assert sorted(p.name for p in cards_dir.glob("*.md")) == ["card-1.md"]
+
+
+class TestScreenerReply:
+    """The screener answers with `index` + scores; the pipeline owns the rest."""
+
+    def _candidates(self) -> list[dict[str, Any]]:
+        return [
+            {"index": 1, "title": "First paper", "pmid": "11", "retracted": False},
+            {"index": 2, "title": "Second paper", "pmid": "22", "is_preprint": True},
+        ]
+
+    def test_index_reply_returns_the_candidate_row(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _shortlist_rows
+
+        rows = _shortlist_rows(
+            [{"index": 2, "relevance_score": 0.9, "quality_score": 9, "keep_reason": "x"}],
+            self._candidates(),
+        )
+        assert [row["title"] for row in rows] == ["Second paper"]
+        assert rows[0]["pmid"] == "22" and rows[0]["is_preprint"] is True
+        assert rows[0]["quality_score"] == 0.9  # 0-10 reply normalised
+        assert "index" not in rows[0]
+
+    def test_title_echo_still_matches(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _shortlist_rows
+
+        rows = _shortlist_rows(
+            [{"title": "First paper.", "relevance_score": 0.7}], self._candidates()
+        )
+        assert rows[0]["pmid"] == "11" and rows[0]["relevance_score"] == 0.7
+
+    def test_unknown_index_falls_back_to_the_entry(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _shortlist_rows
+
+        rows = _shortlist_rows([{"index": 99, "title": "Ghost"}], self._candidates())
+        assert rows[0]["title"] == "Ghost"

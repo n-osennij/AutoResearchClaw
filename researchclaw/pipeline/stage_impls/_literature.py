@@ -36,6 +36,11 @@ from researchclaw.prompts import PromptManager
 
 logger = logging.getLogger(__name__)
 
+# How much of a failed screener reply is kept for diagnosis. The full body can
+# be megabytes when the model types an essay; the first 200k chars carry the
+# truncation point and the shape of the answer.
+_RAW_RESPONSE_CAP = 200_000
+
 
 # ---------------------------------------------------------------------------
 # Local helpers
@@ -1115,6 +1120,65 @@ def _truthy(value: object) -> bool:
     return bool(value)
 
 
+def _coerce_score(value: object) -> float:
+    """Read a relevance/quality score the model emitted on whatever scale.
+
+    The prompt asks for 0-1; real replies come back as 9.5 / 10 because the
+    threshold in the prompt reads like a grade out of ten. Mixing the two
+    scales in one shortlist silently reorders it.
+    """
+    try:
+        score = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.5
+    if score < 0:
+        return 0.0
+    if score <= 1:
+        return score
+    if score <= 10:
+        return round(score / 10, 3)
+    if score <= 100:
+        return round(score / 100, 3)
+    return 1.0
+
+
+def _shortlist_rows(
+    entries: list[Any], candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Turn the screener's reply into shortlist rows.
+
+    The prompt asks for compact ``{index, relevance_score, quality_score,
+    keep_reason}`` entries, where ``index`` is the field added to every
+    candidate line. Rows that still echo a title are accepted too, so a model
+    that ignores the instruction keeps working.
+    """
+    by_index = {str(row.get("index")): row for row in candidates}
+    by_key: dict[str, dict[str, Any]] = {}
+    for row in candidates:
+        for key in _row_keys(row):
+            by_key.setdefault(key, row)
+
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        match = by_index.get(str(entry.get("index")))
+        if match is None:
+            for key in _row_keys(entry):
+                match = by_key.get(key)
+                if match is not None:
+                    break
+        row = dict(match) if match is not None else dict(entry)
+        for field in ("relevance_score", "quality_score"):
+            row[field] = _coerce_score(entry.get(field))
+        if entry.get("keep_reason") not in (None, ""):
+            row["keep_reason"] = entry["keep_reason"]
+        row.pop("index", None)
+        rows.append(row)
+    return rows
+
+
+
 def _row_keys(row: dict[str, Any], *, strip_etal: bool = False) -> list[str]:
     """Identifiers a shortlist row can be matched back on."""
     keys = []
@@ -1326,6 +1390,13 @@ def _execute_literature_screen(
             row["mesh_terms"] = list(mesh)[:5]
 
     # Rebuild candidates_text from filtered rows
+    # Number the rows and rebuild candidates_text. The screener answers with
+    # ``index`` + scores instead of echoing titles, abstracts and metadata: a
+    # reasoning model spent its whole 8k output budget on reasoning plus a
+    # re-statement of 60 rows, which truncated the JSON and silently fell back
+    # to template rows.
+    for _index, _row in enumerate(filtered_rows, start=1):
+        _row["index"] = _index
     candidates_text = "\n".join(
         json.dumps(r, ensure_ascii=False) for r in filtered_rows
     )
@@ -1362,26 +1433,55 @@ def _execute_literature_screen(
             quality_threshold=config.research.quality_threshold,
             candidates_text=candidates_text,
         )
-        resp = _chat_with_prompt(
-            llm,
-            sp.system,
-            sp.user,
-            json_mode=sp.json_mode,
-            max_tokens=sp.max_tokens,
-        )
-        payload = _safe_json_loads(resp.content, {})
-        raw = payload.get("shortlist") if isinstance(payload, dict) else None
+        raw: Any = None
+        resp = None
+        # A reasoning model can spend the entire output budget thinking and
+        # return "" with finish_reason="length"; one retry with double the
+        # budget recovers it, and the second failure is reported instead of
+        # silently turning into template rows.
+        for _attempt in range(2):
+            resp = _chat_with_prompt(
+                llm,
+                sp.system,
+                sp.user,
+                json_mode=sp.json_mode,
+                max_tokens=sp.max_tokens * (2**_attempt) if sp.max_tokens else None,
+            )
+            payload = _safe_json_loads(resp.content, {})
+            raw = payload.get("shortlist") if isinstance(payload, dict) else None
+            if isinstance(raw, list) or _attempt:
+                break
+            logger.info(
+                "Stage 5: screener returned an unusable reply (finish=%r, "
+                "%d chars); retrying with a larger budget",
+                resp.finish_reason,
+                len(resp.content),
+            )
         if isinstance(raw, list):
             if len(raw) == 0:
                 # Distinguish a valid strict-screen empty result from a
                 # malformed list whose entries are not dicts.
                 model_rejected_all = True
             else:
-                shortlist = [row for row in raw if isinstance(row, dict)]
+                shortlist = _shortlist_rows(raw, filtered_rows)
                 if not shortlist:
                     parse_failed = True
         else:
             parse_failed = True
+        if parse_failed:
+            # The reply is the only evidence of *why*: a truncated JSON body
+            # (max_tokens) and a model that answered prose look identical in
+            # screen_meta.json, and both used to end in a silent template
+            # shortlist with no trace of the model output.
+            (stage_dir / "screen_raw.txt").write_text(
+                resp.content[:_RAW_RESPONSE_CAP], encoding="utf-8"
+            )
+            logger.warning(
+                "Stage 5: screener reply was not JSON with a shortlist "
+                "(%d chars, kept in screen_raw.txt): %r",
+                len(resp.content),
+                resp.content[:200],
+            )
     # Ensure a usable shortlist size for adequate related work (configurable)
     _MIN_SHORTLIST = screening.min_shortlist
     if model_rejected_all:
@@ -1502,6 +1602,9 @@ def _execute_literature_screen(
                 _MIN_SHORTLIST,
             )
 
+    # ``index`` is a screening-time address, not a field of the paper.
+    for row in shortlist:
+        row.pop("index", None)
     out = stage_dir / "shortlist.jsonl"
     _write_jsonl(out, shortlist)
     # Always written: the pre-screen and the char cap are invisible otherwise,

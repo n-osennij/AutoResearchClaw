@@ -38,6 +38,8 @@ _MAX_PAGE = 1000
 # backend. ``PUB_YEAR`` would silently drop preprints, whose pubYear is the
 # year the record was created.
 _YEAR_FIELD = "FIRST_PDATE"
+# Europe PMC serves these to an interactive session only (403 to every client).
+_BROWSER_ONLY_PDF_MARKERS = ("?pdf=render", "ptpmcrender.fcgi")
 
 # Same vocabulary as PubMed: a partially retracted paper is still retracted.
 _RETRACTION_TYPES = frozenset({"Retraction in", "Partial Retraction in"})
@@ -135,12 +137,24 @@ def _venue(payload: dict[str, Any]) -> str:
 
 
 def _pdf_url(payload: dict[str, Any]) -> str:
+    """PDF link, minus the ones Europe PMC only serves to a browser.
+
+    ``europepmc.org/...?pdf=render`` and ``ptpmcrender.fcgi`` answer 403 to
+    every programmatic request (verified for PMC13472880), so advertising them
+    only produced a "PDF download failed: 403" line per record and wasted a
+    request. Full text is still reachable through the REST ``fullTextXML``
+    endpoint, and the article page stays in ``url``.
+    """
     urls = ((payload.get("fullTextUrlList") or {}).get("fullTextUrl")) or []
     for entry in urls:
         if not isinstance(entry, dict):
             continue
-        if entry.get("documentStyle") == "pdf" and entry.get("url"):
-            return _clean(entry["url"])
+        if entry.get("documentStyle") != "pdf" or not entry.get("url"):
+            continue
+        url = _clean(entry["url"])
+        if any(marker in url for marker in _BROWSER_ONLY_PDF_MARKERS):
+            continue
+        return url
     return ""
 
 

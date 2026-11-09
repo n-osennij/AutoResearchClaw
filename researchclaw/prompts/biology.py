@@ -509,9 +509,11 @@ STAGES["literature_screen"] = {
     ),
     "user": (
         "Perform merged relevance+quality screening and return shortlist.\n"
-        "Return JSON: {shortlist:[...]} each with title, cite_key "
-        "(if present), relevance_score (0-1), quality_score (0-1), "
-        "keep_reason.\n"
+        "Return JSON: {shortlist:[{index, relevance_score, quality_score, keep_reason}]} "
+        "where `index` is the integer `index` field of the candidate line you keep. "
+        "Do NOT echo titles, abstracts or metadata: the pipeline re-attaches them "
+        "from the candidate by index, and an echoing answer spends the output "
+        "budget on nothing until the JSON truncates.\n"
         "Preserve all original fields (paper_id, doi, arxiv_id, cite_key, "
         "pmid, is_preprint, pub_types, concern, etc.) from the input.\n"
         "Papers tagged year_band=\"foundational\" predate the recent "
@@ -544,7 +546,7 @@ STAGES["literature_screen"] = {
         "Candidates JSONL:\n{candidates_text}"
     ),
     "json_mode": True,
-    "max_tokens": 8192,
+        "max_tokens": 16384,
 }
 
 

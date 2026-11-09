@@ -323,3 +323,28 @@ class TestTextAndFlags:
         )
         assert europepmc_client.search_europepmc("q") == []
 
+
+
+def test_browser_only_pdf_links_are_not_advertised() -> None:
+    """Europe PMC answers 403 to programmatic PDF fetches."""
+    from researchclaw.literature.europepmc_client import _pdf_url
+
+    payload = {
+        "fullTextUrlList": {
+            "fullTextUrl": [
+                {
+                    "documentStyle": "pdf",
+                    "url": "https://europepmc.org/articles/PMC1?pdf=render",
+                },
+                {
+                    "documentStyle": "pdf",
+                    "url": "https://europepmc.org/backend/ptpmcrender.fcgi?accid=PMC1",
+                },
+                {"documentStyle": "pdf", "url": "https://example.org/paper.pdf"},
+            ]
+        }
+    }
+    assert _pdf_url(payload) == "https://example.org/paper.pdf"
+    assert _pdf_url({"fullTextUrlList": {"fullTextUrl": [
+        {"documentStyle": "pdf", "url": "https://europepmc.org/articles/PMC1?pdf=render"}
+    ]}}) == ""

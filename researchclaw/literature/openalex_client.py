@@ -59,6 +59,9 @@ _PDF_HOSTS = (
 
 # Last request timestamp for rate limiting
 _last_request_time: float = 0.0
+# Set once the API rejects ``is_retracted`` in ``select``: the field is newer
+# than some deployments, and a single run issues dozens of queries.
+_select_retraction_rejected: bool = False
 _rate_lock = threading.Lock()
 
 
@@ -90,6 +93,7 @@ def search_openalex(
     list[Paper]
         Parsed papers.  Empty list on network failure.
     """
+    global _select_retraction_rejected
     global _last_request_time  # noqa: PLW0603
 
     # Rate limiting (locked to serialize concurrent callers)
@@ -107,15 +111,18 @@ def search_openalex(
     if year_min > 0:
         filters.append(f"from_publication_date:{year_min}-01-01")
 
+    select = (
+        "id,title,authorships,publication_year,primary_location,"
+        "cited_by_count,doi,ids,abstract_inverted_index,type,"
+        "open_access,best_oa_location,locations"
+    )
+    if not _select_retraction_rejected:
+        select += ",is_retracted"
     params: dict[str, str] = {
         "search": query,
         "per_page": str(limit),
         "mailto": email,
-        "select": (
-            "id,title,authorships,publication_year,primary_location,"
-            "cited_by_count,doi,ids,abstract_inverted_index,type,"
-            "open_access,best_oa_location,locations,is_retracted"
-        ),
+        "select": select,
     }
     if api_key:
         params["api_key"] = api_key
@@ -129,9 +136,14 @@ def search_openalex(
         # blanks the primary backend for the whole run. ``is_retracted`` is the
         # newest field in the list, so drop it and try once more — losing the
         # flag (PubMed/Crossref still supply it) beats losing the source.
+        # Remember it for the rest of the process: retrying the rejected field
+        # on each of the run's 30+ queries doubled the request count and filled
+        # the log with the same warning.
         logger.warning(
-            "OpenAlex rejected the select list; retrying without is_retracted"
+            "OpenAlex rejected the select list; dropping is_retracted for the "
+            "rest of this run"
         )
+        _select_retraction_rejected = True
         params["select"] = str(params["select"]).replace(",is_retracted", "")
         url = f"{_BASE_URL}?{urllib.parse.urlencode(params)}"
         data = _request_with_retry(url, email)
