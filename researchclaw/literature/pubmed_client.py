@@ -105,6 +105,7 @@ def _to_paper(article: ET.Element) -> Paper | None:
                 break
 
     pmid = _text(citation.find("PMID"))
+    pub_types = _pub_types(article, citation)
     return Paper(
         paper_id=f"pmid:{pmid}" if pmid else doi,
         title=title,
@@ -116,10 +117,14 @@ def _to_paper(article: ET.Element) -> Paper | None:
         url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
         source="pubmed",
         pmid=pmid,
-        pub_types=_pub_types(article, citation),
+        pub_types=pub_types,
         mesh_terms=_mesh_terms(citation),
         retracted=_retracted(article, citation),
-        concern="Expression of Concern" in _pub_types(article, citation),
+        # MEDLINE labels preprints (``Preprint``) and marks the record that
+        # supersedes one (``Preprint Citation Index``); without the flag a
+        # preprint beats its journal version in dedup.
+        is_preprint="Preprint" in pub_types,
+        concern="Expression of Concern" in pub_types,
     )
 
 

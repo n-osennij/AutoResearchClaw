@@ -95,7 +95,9 @@ class TestParsing:
         assert paper.retracted is False
         assert paper.pub_types == ("Journal Article",)
         assert paper.pdf_url == "https://europepmc.org/pdf/PMC1.pdf"
-        assert paper.url == "https://europepmc.org/article/MED/39532094"
+        # DOI first: the reference links at the publisher, not at a
+        # syndication page that needs the source code to resolve.
+        assert paper.url == "https://doi.org/10.1038/s41586-024-08100-w"
 
     def test_inline_markup_is_stripped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -182,9 +184,16 @@ class TestRetraction:
 
 
 class TestYearPolicy:
-    def test_year_filter_uses_first_pdate(self) -> None:
+    def test_year_filter_leaves_a_year_of_slack(self) -> None:
+        """FIRST_PDATE is the first appearance, the displayed year is pubYear.
+
+        A paper first posted in Dec 2019 and published in a 2020 issue must not
+        be filtered out server-side, so the floor is one year below the caller's
+        and the local check (``test_old_records_are_dropped_client_side``)
+        enforces the exact year.
+        """
         query = _build_query("crispr", 2020)
-        assert "FIRST_PDATE:[2020-01-01 TO 3000-12-31]" in query
+        assert "FIRST_PDATE:[2019-01-01 TO 3000-12-31]" in query
 
     def test_no_year_filter_when_year_min_zero(self) -> None:
         assert "FIRST_PDATE" not in _build_query("crispr", 0)
@@ -199,6 +208,16 @@ class TestYearPolicy:
         )
         assert search_europepmc("crispr", year_min=2020) == []
 
+    def test_posting_date_fills_a_missing_year(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        record = dict(_MED_RECORD, pubYear="", firstPublicationDate="2021-03-04")
+        monkeypatch.setattr(
+            "researchclaw.literature.europepmc_client.fetch_json",
+            lambda *a, **k: _payload([record]),
+        )
+        assert search_europepmc("crispr")[0].year == 2021
+
     def test_record_without_year_is_kept(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -208,6 +227,26 @@ class TestYearPolicy:
             lambda *a, **k: _payload([record]),
         )
         assert len(search_europepmc("crispr", year_min=2020)) == 1
+
+
+class TestContactAddress:
+    def test_email_goes_into_the_user_agent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """EBI asks for a contact address; the adapter forwards the OpenAlex one."""
+        seen: dict[str, dict[str, str]] = {}
+
+        def fake(url: str, **kwargs: object) -> dict:
+            seen["headers"] = kwargs["headers"]  # type: ignore[assignment]
+            return _payload([])
+
+        monkeypatch.setattr(
+            "researchclaw.literature.europepmc_client.fetch_json", fake
+        )
+        search_europepmc("crispr", email="me@example.org")
+        assert "mailto:me@example.org" in seen["headers"]["User-Agent"]
+        search_europepmc("crispr")
+        assert "mailto" not in seen["headers"]["User-Agent"]
 
 
 class TestDegradation:

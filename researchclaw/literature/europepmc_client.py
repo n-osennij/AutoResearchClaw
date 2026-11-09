@@ -48,9 +48,19 @@ def _clean(value: Any) -> str:
 
 
 def _build_query(query: str, year_min: int) -> str:
+    """AND the year floor into *query*.
+
+    The server-side floor is one year looser than the caller's: ``FIRST_PDATE``
+    is the *first* appearance (a preprint posting, an online-first date) while
+    the displayed year is ``pubYear``. A paper first posted in December 2019
+    and published in a 2020 issue would otherwise be filtered out server-side
+    while passing the caller's own check on ``Paper.year``. The local re-check
+    in :func:`search_europepmc` still enforces the exact floor.
+    """
     parts = [f"({query})"]
     if year_min > 0:
-        parts.append(f"{_YEAR_FIELD}:[{year_min}-01-01 TO 3000-12-31]")
+        floor = max(1800, year_min - 1)
+        parts.append(f"{_YEAR_FIELD}:[{floor}-01-01 TO 3000-12-31]")
     return " AND ".join(parts)
 
 
@@ -143,6 +153,9 @@ def _to_paper(payload: dict[str, Any]) -> Paper | None:
     pmid = _clean(payload.get("pmid"))
     doi = _clean(payload.get("doi"))
     year_text = _clean(payload.get("pubYear"))
+    if not year_text[:4].isdigit():
+        # Preprints sometimes carry only the posting date.
+        year_text = _clean(payload.get("firstPublicationDate"))
     year = int(year_text[:4]) if year_text[:4].isdigit() else 0
     pub_types = _pub_types(payload)
     return Paper(
@@ -154,7 +167,13 @@ def _to_paper(payload: dict[str, Any]) -> Paper | None:
         venue=_venue(payload),
         citation_count=_as_int(payload.get("citedByCount")),
         doi=doi,
-        url=f"https://europepmc.org/article/{source_code}/{identifier}",
+        # DOI first: the bibliography then points at the publisher instead of a
+        # syndication page that needs the source code to resolve.
+        url=(
+            f"https://doi.org/{doi}"
+            if doi
+            else f"https://europepmc.org/article/{source_code}/{identifier}"
+        ),
         pdf_url=_pdf_url(payload),
         source="europepmc",
         pmid=pmid,
@@ -178,11 +197,17 @@ def _as_int(value: Any, default: int = 0) -> int:
     return default
 
 
+def _user_agent(email: str) -> str:
+    """UA with a contact address: EBI asks for one, like the OpenAlex mailto."""
+    return f"{_USER_AGENT} (mailto:{email})" if email else _USER_AGENT
+
+
 def search_europepmc(
     query: str,
     *,
     limit: int = 50,
     year_min: int = 0,
+    email: str = "",
 ) -> list[Paper]:
     """Search Europe PMC and return parsed records.
 
@@ -194,7 +219,9 @@ def search_europepmc(
     limit:
         Maximum records (capped at 1000 by the API).
     year_min:
-        If > 0, only records first published in this year or later.
+        If > 0, only records whose displayed year is this or later.
+    email:
+        Optional contact address for the User-Agent (see the OpenAlex caller).
 
     Returns
     -------
@@ -213,7 +240,7 @@ def search_europepmc(
         payload = fetch_json(
             url,
             source="Europe PMC",
-            headers={"User-Agent": _USER_AGENT},
+            headers={"User-Agent": _user_agent(email)},
             timeout=_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001 - one backend failing is not fatal

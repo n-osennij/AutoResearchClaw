@@ -131,7 +131,9 @@ def _pubmed_adapter(
 def _europepmc_adapter(
     query: str, limit: int, year_min: int, keys: SourceKeys
 ) -> list[Paper]:
-    return search_europepmc(query, limit=limit, year_min=year_min)
+    return search_europepmc(
+        query, limit=limit, year_min=year_min, email=keys.openalex_email
+    )
 
 
 def _core_adapter(
@@ -549,17 +551,18 @@ def _arxiv_key(arxiv_id: str) -> str:
 
 
 def _deduplicate(papers: list[Paper]) -> list[Paper]:
-    """Remove duplicates.  Priority: DOI > arXiv ID > fuzzy title.
+    """Remove duplicates.  Priority: DOI > arXiv ID > PMID > fuzzy title.
 
     Published records beat preprints (see :func:`_prefer_published`); between
     two records of the same kind the more-cited one wins, and the survivor
     keeps the loser's metadata (DOI, venue, arXiv id, citations). The
     survivor's identifiers are re-registered after every merge, so a third
-    record that only shares the *loser's* DOI/arXiv id still folds into the
-    right entry.
+    record that only shares the *loser's* DOI/arXiv id/pmid still folds into
+    the right entry.
     """
     seen_doi: dict[str, int] = {}
     seen_arxiv: dict[str, int] = {}
+    seen_pmid: dict[str, int] = {}
     seen_title: dict[str, int] = {}
     result: list[Paper] = []
 
@@ -569,6 +572,11 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
             seen_doi[normalise_doi(p.doi)] = idx
         if p.arxiv_id:
             seen_arxiv[_arxiv_key(p.arxiv_id)] = idx
+        if p.pmid:
+            # PubMed and Europe PMC serve the same MEDLINE records. The DOI is
+            # missing from plenty of older articles, so pmid is the only shared
+            # identity those two backends give us.
+            seen_pmid[p.pmid.strip()] = idx
         norm = _canonical_title(p.title)
         if norm:
             seen_title[norm] = idx
@@ -612,6 +620,13 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
             ax_key = _arxiv_key(paper.arxiv_id)
             if ax_key in seen_arxiv:
                 idx = seen_arxiv[ax_key]
+                _merge_duplicate(idx, paper)
+                is_dup = True
+
+        # Check PubMed id
+        if not is_dup and paper.pmid:
+            idx = seen_pmid.get(paper.pmid.strip())
+            if idx is not None:
                 _merge_duplicate(idx, paper)
                 is_dup = True
 

@@ -29,9 +29,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Sequence
 
-from researchclaw.literature.models import Author, Paper, normalise_doi
+from researchclaw.literature.models import Paper, normalise_doi
 from researchclaw.literature._http import _read_limited
 
 logger = logging.getLogger(__name__)
@@ -552,8 +551,8 @@ def verify_by_openalex(title: str) -> CitationResult | None:
 # Verification result cache (avoids re-verifying known papers)
 # ---------------------------------------------------------------------------
 
-import hashlib
-from pathlib import Path
+import hashlib  # noqa: E402 - the cache section is self-contained
+from pathlib import Path  # noqa: E402
 
 _CACHE_DIR = Path.home() / ".cache" / "researchclaw" / "citation_verify"
 # Bump when the verdicts produced by any layer change meaning (e.g. the DOI

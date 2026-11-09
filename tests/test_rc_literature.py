@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import replace
 from email.message import Message
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -338,7 +338,6 @@ class TestArxiv:
         """Test search_arxiv with mocked arxiv library."""
         from unittest.mock import MagicMock
         from datetime import datetime
-        import types
 
         mock_result = MagicMock()
         mock_result.entry_id = "http://arxiv.org/abs/2401.00001v1"
@@ -1132,9 +1131,6 @@ class TestCacheTTL:
         assert _SOURCE_TTL["citation_verify"] >= 86400 * 365
 
 
-import urllib.error
-
-
 class TestS2RetrySleepBudget:
     """The retry loops must not sleep after their final attempt."""
 
@@ -1521,6 +1517,23 @@ class TestPubMedClient:
         assert paper.title == "Multi line title"
         assert chr(10) not in paper.abstract
 
+    def test_preprint_pub_type_sets_the_flag(self) -> None:
+        xml = textwrap.dedent(
+            """            <PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>7</PMID>
+            <Article><ArticleTitle>bioRxiv preprint</ArticleTitle>
+            <PublicationTypeList><PublicationType>Preprint</PublicationType>
+            </PublicationTypeList></Article></MedlineCitation></PubmedArticle>
+            </PubmedArticleSet>
+            """
+        )
+        paper = _parse_articles(ET.fromstring(xml), 0)[0]
+        assert paper.is_preprint is True
+        assert paper.pub_types == ("Preprint",)
+
+    def test_journal_article_is_not_a_preprint(self) -> None:
+        root = ET.fromstring(SAMPLE_PUBMED_XML)
+        assert _parse_articles(root, 0)[0].is_preprint is False
+
     def test_efetch_paces_without_key_only(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1821,6 +1834,17 @@ def _pubmed_article(pub_types: list[str], ref_types: list[str]) -> Any:
 
 
 class TestDedupAndKeys:
+    def test_same_pmid_collapses_without_a_doi(self) -> None:
+        """PubMed and Europe PMC serve the same MEDLINE record; older articles
+        carry no DOI, so pmid is the only identity they share."""
+        from researchclaw.literature.search import _deduplicate
+
+        a = Paper(paper_id="pmid:1", title="Old paper", pmid="1", source="pubmed")
+        b = Paper(paper_id="p2", title="Old paper (syndicated)", pmid="1", source="europepmc")
+        merged = _deduplicate([a, b])
+        assert len(merged) == 1
+        assert merged[0].source == "pubmed"
+
     def test_doi_prefixes_collapse(self) -> None:
         from researchclaw.literature.models import normalise_doi
         from researchclaw.literature.search import _deduplicate
