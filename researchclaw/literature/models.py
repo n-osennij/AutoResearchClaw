@@ -262,12 +262,36 @@ def _bibtex_escape_url(text: str) -> str:
 
 
 def _looks_like_bibtex(entry: str) -> bool:
-    """Cheap structural check for a cached BibTeX override."""
-    if not entry.startswith("@") or "{" not in entry:
+    """Structural check for a cached BibTeX override.
+
+    Balanced braces alone are not what makes an override safe: an extra entry
+    appended after the first one (``@article{x, title={a}}
+
+@article{evil,
+    ...}``) balances perfectly and would inject a fabricated reference into
+    ``references.bib``. So the scan demands exactly one top-level entry that
+    opens at ``@``, closes on the last character, and has nothing but
+    whitespace after it.
+    """
+    if not entry.startswith("@"):
         return False
-    if entry.count("{") != entry.count("}"):
-        return False
-    return entry.rstrip().endswith("}")
+    depth = 0
+    opened = False
+    for index, char in enumerate(entry):
+        if char == "@" and depth == 0:
+            if opened:
+                return False  # a second entry at top level → injection
+            opened = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth < 0:
+                return False
+            if depth == 0:
+                # Entry closed: only trailing whitespace may follow.
+                return not entry[index + 1 :].strip()
+    return False  # never closed
 
 
 # Common English stopwords to skip when picking a keyword for cite_key

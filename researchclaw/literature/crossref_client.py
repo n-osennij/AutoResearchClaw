@@ -15,11 +15,11 @@ Polite pool: pass ``mailto`` in the query string and a matching User-Agent.
 from __future__ import annotations
 
 import logging
-import re
 import urllib.parse
 from typing import Any
 
 from researchclaw.literature._http import fetch_json
+from researchclaw.literature._text import strip_markup
 from researchclaw.literature.models import Author, Paper
 
 logger = logging.getLogger(__name__)
@@ -31,12 +31,9 @@ _SELECT = (
     "abstract,updated-by"
 )
 
-_JATS_RE = re.compile(r"<[^>]+>")
-
-
 def _strip_jats(text: str) -> str:
     """Crossref abstracts come as JATS XML fragments."""
-    return re.sub(r"\s+", " ", _JATS_RE.sub(" ", text)).strip()
+    return strip_markup(text)
 
 
 def _fetch(url: str, email: str) -> dict[str, Any]:

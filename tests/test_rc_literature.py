@@ -1437,6 +1437,63 @@ class TestPubMedClient:
         assert paper.authors[0].name == "Jane Doe"
         assert paper.authors[0].affiliation == "Some University"
 
+    def test_structured_labels_are_kept(self) -> None:
+        root = ET.fromstring(SAMPLE_PUBMED_XML)
+        abstract = _parse_articles(root, 0)[0].abstract
+        assert abstract.startswith("BACKGROUND: ")
+        assert "RESULTS: Text B." in abstract
+
+    def test_whitespace_is_collapsed(self) -> None:
+        xml = textwrap.dedent(
+            """            <PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>9</PMID>
+            <Article><ArticleTitle>Multi
+              line
+              title</ArticleTitle>
+            <Abstract><AbstractText>HR 0.7
+            (0.6-0.8)</AbstractText></Abstract></Article>
+            </MedlineCitation></PubmedArticle></PubmedArticleSet>
+            """
+        )
+        paper = _parse_articles(ET.fromstring(xml), 0)[0]
+        assert paper.title == "Multi line title"
+        assert chr(10) not in paper.abstract
+
+    def test_efetch_paces_without_key_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ids = [str(10_000_000 + i) for i in range(450)]
+        monkeypatch.setattr(
+            "researchclaw.literature.pubmed_client.fetch_json",
+            lambda *a, **kw: {"esearchresult": {"idlist": ids}},
+        )
+        monkeypatch.setattr(
+            "researchclaw.literature.pubmed_client.fetch_bytes",
+            lambda *a, **kw: b"<PubmedArticleSet></PubmedArticleSet>",
+        )
+        sleeps: list[float] = []
+        monkeypatch.setattr(
+            "researchclaw.literature.pubmed_client.time.sleep", sleeps.append
+        )
+        search_pubmed("q", limit=450)
+        assert sleeps == [0.34, 0.34]
+        sleeps.clear()
+        search_pubmed("q", limit=450, api_key="k")
+        assert sleeps == []
+
+    def test_expression_of_concern_is_flagged_not_retracted(self) -> None:
+        xml = textwrap.dedent(
+            """            <PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>7</PMID>
+            <Article><ArticleTitle>T</ArticleTitle>
+            <PublicationTypeList>
+              <PublicationType>Expression of Concern</PublicationType>
+            </PublicationTypeList></Article>
+            </MedlineCitation></PubmedArticle></PubmedArticleSet>
+            """
+        )
+        paper = _parse_articles(ET.fromstring(xml), 0)[0]
+        assert paper.concern is True
+        assert paper.retracted is False
+
     def test_year_filter(self) -> None:
         root = ET.fromstring(SAMPLE_PUBMED_XML)
         assert _parse_articles(root, 2024) == []
@@ -1736,6 +1793,62 @@ class TestDedupAndKeys:
         keys = [line.split("{", 1)[1].split(",")[0] for line in bib.splitlines() if line.startswith("@")]
         assert len(keys) == len(set(keys)) == 3
 
+    def test_accented_titles_merge(self) -> None:
+        from researchclaw.literature.search import _deduplicate
+
+        papers = [
+            Paper(paper_id="a", title="Café society"),
+            Paper(paper_id="b", title="Cafe society"),
+        ]
+        assert len(_deduplicate(papers)) == 1
+
+    def test_doi_resolver_prefix_is_stripped_from_bibtex(self) -> None:
+        paper = Paper(paper_id="x", title="T", doi="https://doi.org/10.1/ABC.")
+        bib = paper.to_bibtex()
+        assert "doi = {10.1/abc}," in bib
+        assert "doi.org" not in bib
+
+    def test_braces_in_url_are_escaped(self) -> None:
+        paper = Paper(paper_id="x", title="T", url="https://e.org/x}y")
+        bib = paper.to_bibtex()
+        # ``\}`` keeps the field open; an unescaped ``}`` would close it early.
+        assert "url = {https://e.org/x" + chr(92) + "}y}," in bib
+
+    def test_override_entries_get_unique_keys(self) -> None:
+        from researchclaw.literature.search import papers_to_bibtex
+
+        override = "@article{same2024title, title={X}}"
+        papers = [
+            replace(Paper(paper_id=str(i), title="T", year=2024), _bibtex_override=override)
+            for i in range(3)
+        ]
+        keys = [
+            line.split("{", 1)[1].split(",")[0]
+            for line in papers_to_bibtex(papers).splitlines()
+            if line.startswith("@")
+        ]
+        assert len(keys) == len(set(keys)) == 3
+
+    def test_third_record_sharing_losers_id_folds_in(self) -> None:
+        from researchclaw.literature.search import _deduplicate
+
+        a = Paper(paper_id="A", title="Same Title", doi="10.1/a", citation_count=100)
+        b = Paper(paper_id="B", title="Same Title", arxiv_id="2401.11111", citation_count=1)
+        c = Paper(paper_id="C", title="Totally Different", arxiv_id="2401.11111")
+        assert [p.paper_id for p in _deduplicate([a, b, c])] == ["A"]
+
+    def test_keys_unique_past_26_collisions(self) -> None:
+        from researchclaw.literature.search import papers_to_bibtex
+
+        papers = [Paper(paper_id=str(i), title="Same title", year=2024) for i in range(30)]
+        bib = papers_to_bibtex(papers)
+        keys = [
+            line.split("{", 1)[1].split(",")[0]
+            for line in bib.splitlines()
+            if line.startswith("@")
+        ]
+        assert len(keys) == len(set(keys)) == 30
+
     def test_cite_key_is_bounded(self) -> None:
         paper = Paper(paper_id="x", title="A" * 500, year=2024)
         assert len(paper.cite_key) <= 40
@@ -1797,6 +1910,29 @@ class TestClientTypeMapping:
         assert paper.retracted is False
 
 
+class TestCacheRestore:
+    def test_infinite_numbers_do_not_abort_the_restore(self) -> None:
+        from researchclaw.literature.search import _dicts_to_papers
+
+        rows = [
+            {"paper_id": "a", "title": "ok"},
+            {"paper_id": "b", "title": "bad", "year": float("inf"), "citation_count": float("nan")},
+        ]
+        papers = _dicts_to_papers(rows)
+        # The poisoned row is either skipped or clamped — never fatal.
+        assert [p.paper_id for p in papers][0] == "a"
+        assert all(p.year == 0 for p in papers)
+
+    def test_concern_round_trips(self) -> None:
+        from researchclaw.literature.search import _dicts_to_papers, _papers_to_dicts
+
+        paper = replace(
+            Paper(paper_id="x", title="T"), concern=True, retracted=False
+        )
+        restored = _dicts_to_papers(_papers_to_dicts([paper]))
+        assert restored[0].concern is True
+
+
 class TestPubMedRetraction:
     def test_retracted_publication_type(self) -> None:
         assert _pubmed_article(["Retracted Publication"], []) is True
@@ -1851,3 +1987,162 @@ class TestBiomedicalCacheRoundTrip:
         assert got.is_preprint is False
         assert got.pub_types == ()
         assert got.retracted is False
+
+
+class TestTitleNormalisation:
+    """Round-2 audit: Greek folding order and non-Latin titles."""
+
+    def test_accented_greek_matches_plain(self) -> None:
+        from researchclaw.literature.search import _normalise_title
+
+        # NFKD must run before the Greek fold, otherwise the accent deletes
+        # the letter: "ά-synuclein" used to normalise to "synuclein".
+        assert _normalise_title("ά-synuclein") == _normalise_title("α-synuclein")
+        assert _normalise_title("ά-synuclein") == "asynuclein"
+
+    def test_greek_and_ascii_spelling_merge(self) -> None:
+        from researchclaw.literature.search import _normalise_title
+
+        assert _normalise_title("α-synuclein") == _normalise_title("a-synuclein")
+        assert _normalise_title("β") != _normalise_title("α")
+
+    def test_accented_latin_folds(self) -> None:
+        from researchclaw.literature.search import _normalise_title
+
+        assert _normalise_title("Café au lait") == _normalise_title("Cafe au lait")
+
+    def test_cjk_titles_are_not_used_as_dedup_key(self) -> None:
+        """Two different Chinese titles sharing an ASCII tail must not merge."""
+        from researchclaw.literature.models import Paper
+        from researchclaw.literature.search import _deduplicate
+
+        a = Paper(paper_id="1", title="研究一：results", authors=(), year=2024)
+        b = Paper(paper_id="2", title="研究二：results", authors=(), year=2024)
+        assert len(_deduplicate([a, b])) == 2
+        # A CJK title still de-duplicates by DOI.
+        a_doi = Paper(paper_id="3", title="研究一", authors=(), year=2024, doi="10.1/x")
+        b_doi = Paper(paper_id="4", title="研究二", authors=(), year=2024, doi="10.1/x")
+        assert len(_deduplicate([a_doi, b_doi])) == 1
+
+
+class TestBibtexKeyDedupe:
+    def test_duplicate_keys_are_renamed_in_order(self) -> None:
+        from researchclaw.literature.search import dedupe_bibtex_entries
+
+        out = dedupe_bibtex_entries(
+            [
+                "@article{smith2024, title={One}}",
+                "@article{smith2024, title={Two}}",
+                "@article {smith2024, title={Three}}",
+            ]
+        )
+        assert out[0].startswith("@article{smith2024,")
+        assert out[1].startswith("@article{smith2024a,")
+        # A space before the opening brace is legal and must be renamed too.
+        assert out[2].startswith("@article {smith2024b,")
+
+    def test_suffix_uses_letters_beyond_z(self) -> None:
+        from researchclaw.literature.search import dedupe_bibtex_entries
+
+        entries = [f"@misc{{k, x={i}}}" for i in range(28)]
+        keys = [e.split("{", 1)[1].split(",", 1)[0] for e in dedupe_bibtex_entries(entries)]
+        assert len(set(keys)) == 28
+        # first duplicate is "ka", so index 26 is the 26th suffix ("z")
+        assert keys[26] == "kz"
+        assert keys[27] == "kaa"
+
+    def test_keys_never_exceed_forty_chars(self) -> None:
+        from researchclaw.literature.search import dedupe_bibtex_entries
+
+        long_key = "a" * 40
+        out = dedupe_bibtex_entries([f"@misc{{{long_key}, x=1}}"] * 3)
+        keys = [e.split("{", 1)[1].split(",", 1)[0] for e in out]
+        assert all(len(k) <= 40 for k in keys)
+        assert len(set(keys)) == 3
+
+    def test_override_key_is_what_gets_counted(self) -> None:
+        """Bookkeeping follows the emitted key, not ``cite_key``."""
+        from researchclaw.literature.search import dedupe_bibtex_entries
+
+        out = dedupe_bibtex_entries(
+            [
+                "@article{override2024, title={One}}",
+                "@article{override2024, title={Two}}",
+            ]
+        )
+        assert "override2024a" in out[1]
+
+
+class TestBibtexOverrideValidation:
+    def test_extra_entry_is_rejected(self) -> None:
+        from researchclaw.literature.models import _looks_like_bibtex
+
+        injection = (
+            "@article{x, title={a}}\n\n@article{evil, title={INJECTED}, author={Nobody}}"
+        )
+        assert _looks_like_bibtex(injection) is False
+        assert _looks_like_bibtex("@article{x, title={a}}") is True
+        assert _looks_like_bibtex("@article {x, title={a}}") is True
+        assert _looks_like_bibtex("@article{x, title={a}} trailing junk") is False
+        assert _looks_like_bibtex("not bibtex") is False
+
+
+class TestMarkupStripping:
+    def test_comparisons_survive(self) -> None:
+        from researchclaw.literature._text import strip_markup
+
+        assert strip_markup("p<0.01") == "p<0.01"
+        assert strip_markup("a<b and c>d") == "a<b and c>d"
+        assert strip_markup("n>100") == "n>100"
+
+    def test_real_tags_are_stripped(self) -> None:
+        from researchclaw.literature._text import strip_markup
+
+        assert strip_markup("<jats:p>text</jats:p>") == "text"
+        assert strip_markup("<sub><i>2</i></sub>") == "2"
+        assert strip_markup('H<italic foo="bar">2</italic>O') == "H 2 O"
+
+    def test_entities_unescaped_after_stripping(self) -> None:
+        from researchclaw.literature._text import strip_markup
+
+        # Unescaping first would turn this into a "<0.01" that looks like a tag.
+        assert strip_markup("&lt;0.01") == "<0.01"
+
+
+class TestVerifyDoiNormalisation:
+    def test_prefixed_doi_is_normalised_before_resolution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.literature import verify as verify_mod
+
+        seen: list[str] = []
+
+        class _Resp:
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            def read(self) -> bytes:
+                return self._body
+
+            def __enter__(self) -> "_Resp":
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        def _fake_urlopen(req: object, **kwargs: object) -> _Resp:
+            seen.append(getattr(req, "full_url", str(req)))
+            return _Resp(
+                b'{"message": {"title": ["Attention is all you need"], '
+                b'"author": [{"given": "A", "family": "Vaswani"}], '
+                b'"issued": {"date-parts": [[2017]]}, '
+                b'"container-title": ["NeurIPS"]}}'
+            )
+
+        monkeypatch.setattr(verify_mod.urllib.request, "urlopen", _fake_urlopen)
+        verify_mod.verify_by_doi("https://doi.org/10.5555/3295222.3295349", "Attention is all you need")
+        assert seen, "resolver was not called"
+        assert "https%3A" not in seen[0], seen[0]
+        import urllib.parse
+
+        assert "10.5555/3295222.3295349" in urllib.parse.unquote(seen[0])

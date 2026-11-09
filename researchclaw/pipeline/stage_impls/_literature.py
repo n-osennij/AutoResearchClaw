@@ -920,7 +920,12 @@ def _execute_literature_collect(
     if (stage_dir / "web_search_result.json").exists():
         artifacts.append("web_search_result.json")
     if bibtex_entries:
-        bib_content = "\n\n".join(bibtex_entries) + "\n"
+        # Duplicate keys are fatal in BibTeX (the second entry shadows the
+        # first), and the stage assembles entries from several paths, so the
+        # dedup runs on the rendered text right before the write.
+        from researchclaw.literature.search import dedupe_bibtex_entries
+
+        bib_content = "\n\n".join(dedupe_bibtex_entries(bibtex_entries)) + "\n"
         (stage_dir / "references.bib").write_text(bib_content, encoding="utf-8")
         artifacts.append("references.bib")
         logger.info(

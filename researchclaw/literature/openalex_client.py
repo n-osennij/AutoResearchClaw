@@ -123,6 +123,17 @@ def search_openalex(
 
     url = f"{_BASE_URL}?{urllib.parse.urlencode(params)}"
     data = _request_with_retry(url, email)
+    if data is None and "is_retracted" in str(params.get("select", "")):
+        # OpenAlex answers 400 for an unknown ``select`` field, and a 400 here
+        # blanks the primary backend for the whole run. ``is_retracted`` is the
+        # newest field in the list, so drop it and try once more — losing the
+        # flag (PubMed/Crossref still supply it) beats losing the source.
+        logger.warning(
+            "OpenAlex rejected the select list; retrying without is_retracted"
+        )
+        params["select"] = str(params["select"]).replace(",is_retracted", "")
+        url = f"{_BASE_URL}?{urllib.parse.urlencode(params)}"
+        data = _request_with_retry(url, email)
     if data is None:
         return []
 
@@ -368,6 +379,6 @@ def _parse_openalex_work(item: dict[str, Any]) -> Paper:
         # looked peer-reviewed, and since it ties on citations with the journal
         # version, dedup kept the preprint. ``is_retracted`` is the only
         # retraction signal OpenAlex has, so ask for it explicitly.
-        is_preprint=str(item.get("type") or "").lower() in {"preprint", "posted-content"},
+        is_preprint=str(item.get("type") or "").lower() in {"preprint"},
         retracted=bool(item.get("is_retracted")),
     )

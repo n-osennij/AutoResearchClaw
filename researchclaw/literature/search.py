@@ -24,6 +24,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 import importlib
 import logging
+import math
 import re
 import time
 import unicodedata
@@ -199,14 +200,22 @@ def _papers_to_dicts(papers: list[Paper]) -> list[dict[str, object]]:
 
 
 def _as_int(value: object, default: int = 0) -> int:
+    """Best-effort int for cache rows; never raises.
+
+    ``json.loads`` produces ``Infinity``/``NaN`` for a corrupt or hand-edited
+    cache file, and ``int(float("inf"))`` raises ``OverflowError`` — which used
+    to escape the per-row ``try`` and abort the whole restore.
+    """
+    if isinstance(value, bool):
+        return int(value)
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value)
+        return int(value) if math.isfinite(value) else default
     if isinstance(value, str):
         try:
-            return int(value)
-        except ValueError:
+            return int(float(value)) if value.strip() else default
+        except (ValueError, OverflowError):
             return default
     return default
 
@@ -255,6 +264,7 @@ def _dicts_to_papers(dicts: list[dict[str, object]]) -> list[Paper]:
                     pub_types=_as_str_tuple(d.get("pub_types")),
                     mesh_terms=_as_str_tuple(d.get("mesh_terms")),
                     retracted=bool(d.get("retracted", False)),
+                    concern=bool(d.get("concern", False)),
                     _bibtex_override=str(d.get("_bibtex_override", "")),
                 )
             )
@@ -334,10 +344,19 @@ def search_papers(
             ValueError,
             urllib.error.HTTPError,
             urllib.error.URLError,
-        ):
+        ) as exc:
+            # Not every failure is throttling: a wrong ``limit`` type or a dead
+            # endpoint also lands here, and calling that a rate limit made the
+            # logs useless. The fallback is the same (serve cache, degrade) but
+            # the message names the actual class, with the traceback at DEBUG.
             logger.warning(
-                "[rate-limit] Source %s failed for %r — trying cache", src, query
+                "[literature] Source %s failed (%s: %s) for %r — trying cache",
+                src,
+                type(exc).__name__,
+                exc,
+                query,
             )
+            logger.debug("source %s failure detail", src, exc_info=True)
             cached = cache_get(query, spec.name, limit, year_min)
             if cached:
                 papers = _dicts_to_papers(cached)
@@ -415,10 +434,12 @@ def search_papers_multi_query(
 # ------------------------------------------------------------------
 
 
-# Greek letters carry meaning in biomedical titles: α- and β-synuclein are
-# different proteins, and Na+/K+-ATPase is not "NaKATPase". NFKD has no
-# compatibility mapping for them, so fold to Latin first; then the two titles
-# stay distinct in the dedup key instead of collapsing to the same string.
+# Greek letters carry meaning in biomedical titles: α-synuclein and
+# β-synuclein are different proteins. NFKD has no compatibility mapping for
+# them (they are not accented Latin letters), so transliterate to their
+# conventional Latin spellings; "α-synuclein" then matches the ASCII
+# "a-synuclein" that a journal typesets, which is the pair that actually
+# collides in practice.
 _GREEK_FOLD = str.maketrans(
     {
         "α": "a", "β": "b", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "e",
@@ -430,11 +451,29 @@ _GREEK_FOLD = str.maketrans(
 
 
 def _normalise_title(title: str) -> str:
-    """Lower-case, fold accents, strip punctuation, collapse whitespace."""
-    t = unicodedata.normalize("NFKD", title.lower().translate(_GREEK_FOLD))
+    """Lower-case, fold accents, strip punctuation, collapse whitespace.
+
+    NFKD runs *first*: it decomposes accented Latin (``é`` → ``e`` +
+    combining acute) and accented Greek (``ά`` → ``α`` + combining acute), so
+    the Greek fold sees a bare letter and the combining mark is dropped
+    afterwards. Folding before NFKD left ``ά-`` as ``α`` + accent, which the
+    ``[^a-z0-9]`` strip then deleted — losing the letter entirely.
+    """
+    t = unicodedata.normalize("NFKD", title.lower()).translate(_GREEK_FOLD)
     t = "".join(ch for ch in t if not unicodedata.combining(ch))
     t = re.sub(r"[^a-z0-9\s]", "", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def _title_is_latin(title: str) -> bool:
+    """True when the title is Latin or Greek script throughout.
+
+    Normalisation keeps only ASCII letters, so a CJK or Cyrillic title loses
+    its distinctive part: "研究一：results" and "研究二：results" both reduce to
+    "results" and would be merged into a single paper. Such titles are simply
+    not used as a dedup key — their DOI/arXiv id still is.
+    """
+    return all(ord(ch) < 0x0400 for ch in title if not ch.isspace())
 
 
 def _carry_metadata(old: Paper, new: Paper) -> Paper:
@@ -504,7 +543,7 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
         if p.arxiv_id:
             seen_arxiv[p.arxiv_id.strip()] = idx
         norm = _normalise_title(p.title)
-        if norm:
+        if norm and _title_is_latin(p.title):
             seen_title[norm] = idx
 
     def _merge_duplicate(idx: int, paper: Paper) -> None:
@@ -520,6 +559,10 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
             result[idx] = _carry_metadata(kept, paper)
         else:
             _mark_retracted(result, idx)
+        # Both records' identifiers now point at the survivor: a third record
+        # that only carries the discarded one's arXiv id must not become a
+        # second copy of the same paper.
+        _update_indices(paper, idx)
         _update_indices(result[idx], idx)
 
     for paper in papers:
@@ -560,6 +603,62 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
     return result
 
 
+_KEY_RE = re.compile(r"^(\s*@[A-Za-z]+\s*\{)([^,{}]*)(,)")
+
+
+def _suffix(n: int) -> str:
+    """0→'a' … 25→'z', 26→'aa' … (letters only, never digits)."""
+    letters = ""
+    n += 1
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(97 + rem) + letters
+    return letters
+
+
+def dedupe_bibtex_entries(entries: Sequence[str]) -> list[str]:
+    """Rename duplicate cite keys in already-rendered BibTeX entries.
+
+    Operates on the emitted text, not on ``Paper.cite_key``: a cached
+    ``_bibtex_override`` carries its own key, so bookkeeping keyed on
+    ``cite_key`` would miss the clash and ship two entries BibTeX resolves to
+    one. The key read back from the entry is what gets counted and renamed.
+    """
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for entry in entries:
+        match = _KEY_RE.match(entry)
+        key = match.group(2).strip() if match else ""
+        if not key:
+            out.append(entry)  # unparseable: keep it, cannot rename safely
+            continue
+        count = seen.get(key, 0)
+        seen[key] = count + 1
+        if count:
+            # Skip candidates that collide with a key already in use: a key
+            # made of the suffix letter itself ("aaaa…") truncates to the same
+            # string, so a blind rename would emit the duplicate again.
+            attempt = count
+            while attempt < count + 1000:
+                suffix = _suffix(attempt - 1)
+                new_key = key[: max(1, 40 - len(suffix))] + suffix
+                if new_key != key and new_key not in seen:
+                    break
+                attempt += 1
+            else:  # pragma: no cover - 1000 consecutive collisions
+                new_key = key
+            entry = (
+                entry[: match.start()]
+                + match.group(1)
+                + new_key
+                + match.group(3)
+                + entry[match.end() :]
+            )
+            seen[new_key] = seen.get(new_key, 0) + 1
+        out.append(entry)
+    return out
+
+
 def papers_to_bibtex(papers: Sequence[Paper]) -> str:
     """Generate a combined BibTeX file from a list of papers.
 
@@ -568,15 +667,4 @@ def papers_to_bibtex(papers: Sequence[Paper]) -> str:
     loses a reference. Keys are de-duplicated with ``a``/``b``/``c`` suffixes
     in input order, which keeps the first occurrence unchanged.
     """
-    entries: list[str] = []
-    seen: dict[str, int] = {}
-    for paper in papers:
-        entry = paper.to_bibtex()
-        base = paper.cite_key
-        count = seen.get(base, 0)
-        seen[base] = count + 1
-        if count:
-            suffix = "abcdefghijklmnopqrstuvwxyz"[count - 1] if count < 26 else str(count)
-            entry = entry.replace("{" + base + ",", "{" + base + suffix + ",", 1)
-        entries.append(entry)
-    return "\n\n".join(entries) + "\n"
+    return (chr(10) * 2).join(dedupe_bibtex_entries([p.to_bibtex() for p in papers])) + chr(10)

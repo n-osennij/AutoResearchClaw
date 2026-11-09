@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Sequence
 
-from researchclaw.literature.models import Author, Paper
+from researchclaw.literature.models import Author, Paper, normalise_doi
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +298,7 @@ def _verify_doi_datacite(doi: str, expected_title: str) -> CitationResult | None
     arXiv DOIs (10.48550/arXiv.*) are registered with DataCite, not CrossRef.
     Returns *None* on network failure.
     """
+    doi = normalise_doi(doi)
     encoded_doi = urllib.parse.quote(doi, safe="")
     url = f"{_DATACITE_API}/{encoded_doi}"
 
@@ -378,6 +379,7 @@ def verify_by_doi(doi: str, expected_title: str) -> CitationResult | None:
 
     Returns *None* on network failure.
     """
+    doi = normalise_doi(doi)
     encoded_doi = urllib.parse.quote(doi, safe="")
     url = f"{_CROSSREF_API}/{encoded_doi}"
 
@@ -739,7 +741,7 @@ def verify_citations(
         key = entry.get("key", f"unknown_{i}")
         title = entry.get("title", "")
         arxiv_id = entry.get("eprint", "")
-        doi = entry.get("doi", "")
+        doi = normalise_doi(entry.get("doi", ""))
 
         # Skip entries with no title
         if not title:

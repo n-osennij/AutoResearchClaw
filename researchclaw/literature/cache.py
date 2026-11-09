@@ -147,16 +147,23 @@ def put_cache(
     # rename one writer's half-finished file into place over the other's.
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        # ``json.dumps`` sits inside the guard: an unserialisable field is a
+        # cache miss, not a crash in the literature stage.
+        body = json.dumps(payload, indent=2)
+        tmp.write_text(body, encoding="utf-8")
         os.replace(tmp, path)
         logger.debug("Cached %d papers for key %s", len(papers), key)
-    except OSError:
+    except (OSError, TypeError, ValueError):
         logger.warning("Could not write literature cache entry %s", path, exc_info=True)
     finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        # Nothing to do when ``os.replace`` consumed the temp file; this only
+        # cleans up after a failure (and never touches another writer's file,
+        # since the name carries pid + uuid4).
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------

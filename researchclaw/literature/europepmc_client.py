@@ -20,13 +20,12 @@ Public API
 
 from __future__ import annotations
 
-import html
 import logging
-import re
 import urllib.parse
 from typing import Any
 
 from researchclaw.literature._http import fetch_json
+from researchclaw.literature._text import strip_markup
 from researchclaw.literature.models import Author, Paper
 
 logger = logging.getLogger(__name__)
@@ -46,18 +45,9 @@ EPMC_PREPRINT_FILTER = "SRC:PPR"
 # Same vocabulary as PubMed: a partially retracted paper is still retracted.
 _RETRACTION_TYPES = frozenset({"Retraction in", "Partial Retraction in"})
 
-_TAG_RE = re.compile(
-    r"</?(?:i|b|em|strong|sub|sup|u|p|br|sec|title|h[1-6])(?:\s[^<>]*)?/?>",
-    re.IGNORECASE,
-)
-
-
 def _clean(value: Any) -> str:
     """Strip the inline markup Europe PMC leaves in titles and abstracts."""
-    if not value:
-        return ""
-    text = _TAG_RE.sub(" ", str(value))
-    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+    return strip_markup(value)
 
 
 def _build_query(query: str, year_min: int) -> str:
