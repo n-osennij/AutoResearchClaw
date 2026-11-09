@@ -31,6 +31,11 @@ exp/
 logs/
 writing/
 
+# Secrets: keys live outside the repo (~/.config/researchclaw/) or in gitignored
+# local config. Env files are the other common slip-up.
+.env
+.env.*
+!.env.example
 # Root-level config (local overrides, not committed)
 /config.yaml
 /config.arc.yaml
