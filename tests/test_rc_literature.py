@@ -44,6 +44,7 @@ from researchclaw.literature.arxiv_client import (
     search_arxiv,
 )
 from researchclaw.literature.search import (
+    SourceKeys,
     _deduplicate,
     _normalise_title,
     papers_to_bibtex,
@@ -987,14 +988,26 @@ class TestMultiSourceFallback:
         papers = search_papers(
             "test",
             sources=["openalex"],
-            openalex_email="bot@example.com",
-            openalex_api_key="oa-test-key",
+            keys=SourceKeys(
+                openalex_email="bot@example.com",
+                openalex_api_key="oa-test-key",
+            ),
         )
 
         assert len(papers) == 1
         assert captured["query"] == "test"
         assert captured["email"] == "bot@example.com"
         assert captured["api_key"] == "oa-test-key"
+
+    def test_s2_alias_shares_the_canonical_source_spec(self) -> None:
+        """``s2`` is an alias: same adapter, same cache key, same pacing."""
+        from researchclaw.literature.search import _SOURCES, _normalise_source
+
+        assert _normalise_source("S2") == "s2"
+        assert _normalise_source("Semantic-Scholar") == "semantic_scholar"
+        assert _SOURCES["s2"].name == "semantic_scholar"
+        assert _SOURCES["s2"].adapter is _SOURCES["semantic_scholar"].adapter
+        assert _SOURCES["s2"].pause_sec == _SOURCES["semantic_scholar"].pause_sec
 
 
 # ──────────────────────────────────────────────────────────────────────

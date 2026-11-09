@@ -514,9 +514,16 @@ def check_api_key_valid(
     )
 
 
-def check_model_available(base_url: str, api_key: str, model: str) -> CheckResult:
+def check_model_available(
+    base_url: str,
+    api_key: str,
+    model: str,
+    extra_headers: dict[str, str] | None = None,
+) -> CheckResult:
     """Check if a single model is available (kept for backward compat)."""
-    results = _check_models_against_endpoint(base_url, api_key, [model])
+    results = _check_models_against_endpoint(
+        base_url, api_key, [model], extra_headers
+    )
     if results is None:
         return CheckResult(
             name="model_available",

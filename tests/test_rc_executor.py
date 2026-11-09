@@ -2203,12 +2203,15 @@ class TestLiteratureCollectConfiguration:
         )
 
         assert result.status == StageStatus.DONE
-        assert captured["s2_api_key"] == expected_s2_key
-        assert captured["openalex_api_key"] == expected_openalex_key
+        from researchclaw.literature.search import SourceKeys
+
+        keys = cast(SourceKeys, captured["keys"])
+        assert keys.s2_api_key == expected_s2_key
+        assert keys.openalex_api_key == expected_openalex_key
         assert captured["limit_per_query"] == 7
         assert captured["sources"] == ("openalex", "arxiv")
         assert captured["year_min"] == 2019
-        assert captured["openalex_email"] == "research@example.com"
+        assert keys.openalex_email == "research@example.com"
         assert captured["inter_query_delay"] == 0.25
         assert "test-driven science" in cast(list[str], captured["queries"])
 
@@ -2262,9 +2265,11 @@ class TestLiteratureCollectConfiguration:
                 topic: str,
                 *,
                 search_queries: list[str],
+                pdf_urls: list[str] | None = None,
             ) -> FakeWebResult:
                 captured["web_topic"] = topic
                 captured["web_queries"] = search_queries
+                captured["web_pdf_urls"] = pdf_urls
                 return FakeWebResult()
 
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
@@ -2309,6 +2314,7 @@ class TestLiteratureCollectConfiguration:
         }
         assert captured["web_topic"] == rc_config.research.topic
         assert captured["web_queries"] == ["test-driven science"]
+        assert captured["web_pdf_urls"] is None  # fake paper carries no pdf_url
         assert captured["web_context_max_length"] == 20_000
         assert (stage_dir / "web_context.md").read_text(
             encoding="utf-8"
@@ -2319,6 +2325,90 @@ class TestLiteratureCollectConfiguration:
         assert web_metadata["web_results_count"] == 1
         assert "web_context.md" in result.artifacts
         assert "web_search_result.json" in result.artifacts
+
+    def test_open_access_pdf_urls_feed_the_pdf_extractor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+        run_dir: Path,
+    ) -> None:
+        """``Paper.pdf_url`` is not dead data: it becomes a PDF-extraction target."""
+        from researchclaw.literature.models import Paper
+        from researchclaw.pipeline.stage_impls._literature import (
+            _execute_literature_collect,
+        )
+
+        stage_dir = self._prepare_stage(run_dir)
+        captured: dict[str, object] = {}
+
+        def fake_search(queries: list[str], **kwargs: object) -> list[Paper]:
+            return [
+                Paper(
+                    paper_id=f"openalex-W{i}",
+                    title=f"Open-access paper {i}",
+                    year=2025,
+                    pdf_url=f"https://example.org/paper-{i}.pdf",
+                    source="openalex",
+                )
+                for i in range(7)
+            ]
+
+        class FakeWebResult:
+            scholar_papers: list[object] = []
+            web_results: list[object] = []
+            crawled_pages: list[object] = []
+
+            @staticmethod
+            def to_context_string(*, max_length: int) -> str:
+                return ""
+
+            @staticmethod
+            def to_dict() -> dict[str, object]:
+                return {}
+
+        class FakeWebSearchAgent:
+            def __init__(self, **kwargs: object) -> None:
+                pass
+
+            def search_and_extract(
+                self,
+                topic: str,
+                *,
+                search_queries: list[str],
+                pdf_urls: list[str] | None = None,
+            ) -> FakeWebResult:
+                captured["pdf_urls"] = pdf_urls
+                return FakeWebResult()
+
+        monkeypatch.setattr(
+            "researchclaw.literature.search.search_papers_multi_query",
+            fake_search,
+        )
+        monkeypatch.setattr(
+            "researchclaw.data.load_seminal_papers", lambda _topic: []
+        )
+        monkeypatch.setattr(
+            "researchclaw.web.agent.WebSearchAgent", FakeWebSearchAgent
+        )
+        config = replace(
+            rc_config,
+            web_search=replace(
+                rc_config.web_search,
+                enabled=True,
+                enable_pdf_extraction=True,
+            ),
+        )
+
+        result = _execute_literature_collect(
+            stage_dir, run_dir, config, adapters, llm=None
+        )
+
+        assert result.status == StageStatus.DONE
+        # Seven candidates carry a link; the extractor takes the first five.
+        assert captured["pdf_urls"] == [
+            f"https://example.org/paper-{i}.pdf" for i in range(5)
+        ]
 
     def test_execute_stage_runs_literature_contract_without_fallback(
         self,

@@ -1,22 +1,27 @@
 """Unified literature search with deduplication.
 
-Combines results from OpenAlex, Semantic Scholar, and arXiv,
-deduplicates by DOI → arXiv ID → fuzzy title match, and returns
-a merged list sorted by citation count (descending).
+Combines results from the academic backends in ``_SOURCES`` — OpenAlex,
+Semantic Scholar, arXiv, OpenReview, Crossref, PubMed and CORE —
+deduplicates by DOI → arXiv ID → fuzzy title match, and returns a merged
+list sorted by citation count (descending).
 
-Source priority: OpenAlex (most generous limits) → Semantic Scholar → arXiv.
+Source priority: OpenAlex (most generous limits) → Semantic Scholar → arXiv;
+the remaining four are additive and opt-in via ``literature_search.sources``.
 If any source hits rate limits, remaining sources compensate automatically.
 
 Public API
 ----------
-- ``search_papers(query, limit, sources, year_min, deduplicate)``
+- ``search_papers(query, *, limit, sources, year_min, deduplicate, keys)``
   → ``list[Paper]``
+- ``search_papers_multi_query(queries, *, keys, inter_query_delay, ...)``
+  → ``list[Paper]``
+- ``SourceKeys`` — every backend credential in one object
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import importlib
 import logging
 import re
@@ -39,6 +44,123 @@ logger = logging.getLogger(__name__)
 # pressure on the most restrictive API.  OpenReview / Crossref / PubMed / CORE
 # are additive sources appended by the caller when the domain needs them.
 _DEFAULT_SOURCES = ("openalex", "semantic_scholar", "arxiv")
+
+
+@dataclass(frozen=True)
+class SourceKeys:
+    """Credentials for the literature backends.
+
+    Bundled into one object so ``search_papers`` does not grow a keyword
+    argument per new source. Empty values mean "not configured" — each
+    adapter then falls back to that source's unauthenticated behaviour
+    (OpenAlex and arXiv work without a key, CORE does not).
+    """
+
+    s2_api_key: str = ""
+    openalex_email: str = ""
+    openalex_api_key: str = ""
+    pubmed_api_key: str = ""
+    core_api_key: str = ""
+
+
+_Adapter = Callable[[str, int, int, SourceKeys], list[Paper]]
+
+
+def _openalex_adapter(
+    query: str, limit: int, year_min: int, keys: SourceKeys
+) -> list[Paper]:
+    kwargs: dict[str, object] = {"limit": limit, "year_min": year_min}
+    if keys.openalex_email:
+        kwargs["email"] = keys.openalex_email
+    if keys.openalex_api_key:
+        kwargs["api_key"] = keys.openalex_api_key
+    return search_openalex(query, **kwargs)
+
+
+def _semantic_scholar_adapter(
+    query: str, limit: int, year_min: int, keys: SourceKeys
+) -> list[Paper]:
+    return search_semantic_scholar(
+        query, limit=limit, year_min=year_min, api_key=keys.s2_api_key
+    )
+
+
+def _arxiv_adapter(
+    query: str, limit: int, year_min: int, keys: SourceKeys
+) -> list[Paper]:
+    return search_arxiv(query, limit=limit, year_min=year_min)
+
+
+def _openreview_adapter(
+    query: str, limit: int, year_min: int, keys: SourceKeys
+) -> list[Paper]:
+    return search_openreview(query, limit=limit, year_min=year_min)
+
+
+def _crossref_adapter(
+    query: str, limit: int, year_min: int, keys: SourceKeys
+) -> list[Paper]:
+    return search_crossref(
+        query, limit=limit, year_min=year_min, email=keys.openalex_email
+    )
+
+
+def _pubmed_adapter(
+    query: str, limit: int, year_min: int, keys: SourceKeys
+) -> list[Paper]:
+    return search_pubmed(
+        query,
+        limit=limit,
+        year_min=year_min,
+        api_key=keys.pubmed_api_key,
+        email=keys.openalex_email,
+    )
+
+
+def _core_adapter(
+    query: str, limit: int, year_min: int, keys: SourceKeys
+) -> list[Paper]:
+    return search_core(
+        query, limit=limit, year_min=year_min, api_key=keys.core_api_key
+    )
+
+
+@dataclass(frozen=True)
+class _SourceSpec:
+    """How one backend is called, logged and paced."""
+
+    name: str  # canonical name, also the cache key
+    label: str  # display name for log lines
+    adapter: _Adapter
+    pause_sec: float  # gap after this source, before the next one starts
+
+
+# Pause between sources, not between queries — that one is
+# ``inter_query_delay`` in ``search_papers_multi_query``. Values follow each
+# API's documented limit: Semantic Scholar and OpenReview accept ~1 req/s,
+# the rest tolerate faster calls.
+_S2_SPEC = _SourceSpec(
+    "semantic_scholar", "Semantic Scholar", _semantic_scholar_adapter, 1.0
+)
+
+_SOURCES: dict[str, _SourceSpec] = {
+    "openalex": _SourceSpec("openalex", "OpenAlex", _openalex_adapter, 0.5),
+    "semantic_scholar": _S2_SPEC,
+    # ``s2`` is the shorthand used in older configs.
+    "s2": _S2_SPEC,
+    "arxiv": _SourceSpec("arxiv", "arXiv", _arxiv_adapter, 0.0),
+    "openreview": _SourceSpec(
+        "openreview", "OpenReview", _openreview_adapter, 1.0
+    ),
+    "crossref": _SourceSpec("crossref", "Crossref", _crossref_adapter, 0.5),
+    "pubmed": _SourceSpec("pubmed", "PubMed", _pubmed_adapter, 0.5),
+    "core": _SourceSpec("core", "CORE", _core_adapter, 0.5),
+}
+
+
+def _normalise_source(name: str) -> str:
+    """``semantic-scholar`` / ``Semantic Scholar`` → ``semantic_scholar``."""
+    return name.lower().replace("-", "_").replace(" ", "_")
 
 
 CacheGet = Callable[[str, str, int], list[dict[str, object]] | None]
@@ -114,11 +236,7 @@ def search_papers(
     sources: Sequence[str] = _DEFAULT_SOURCES,
     year_min: int = 0,
     deduplicate: bool = True,
-    s2_api_key: str = "",
-    openalex_email: str = "",
-    openalex_api_key: str = "",
-    pubmed_api_key: str = "",
-    core_api_key: str = "",
+    keys: SourceKeys | None = None,
 ) -> list[Paper]:
     """Search multiple academic sources and return deduplicated results.
 
@@ -129,23 +247,23 @@ def search_papers(
     limit:
         Maximum results *per source*.
     sources:
-        Which backends to query.  Default: both S2 and arXiv.
+        Which backends to query.  Default: OpenAlex, Semantic Scholar, arXiv.
+        Unknown names are skipped with a warning; ``s2`` is accepted as an
+        alias for ``semantic_scholar``.
     year_min:
         If >0, pass to backends that support year filtering.
     deduplicate:
         Whether to remove duplicates across sources.
-    s2_api_key:
-        Optional Semantic Scholar API key.
-    openalex_email:
-        Optional OpenAlex mailto value.
-    openalex_api_key:
-        Optional OpenAlex API key.
+    keys:
+        Credentials for the backends (see :class:`SourceKeys`). ``None`` means
+        "no keys configured", which is enough for OpenAlex and arXiv.
 
     Returns
     -------
     list[Paper]
         Merged results, sorted by citation_count descending.
     """
+    keys = keys if keys is not None else SourceKeys()
     all_papers: list[Paper] = []
     cache_get: CacheGet
     cache_put: CachePut
@@ -155,99 +273,20 @@ def search_papers(
     cache_hits = 0
 
     for src in sources:
-        src_lower = src.lower().replace("-", "_").replace(" ", "_")
-        cache_source = (
-            "semantic_scholar" if src_lower in ("semantic_scholar", "s2") else src_lower
-        )
+        spec = _SOURCES.get(_normalise_source(src))
+        if spec is None:
+            logger.warning("Unknown literature source: %s (skipped)", src)
+            continue
         try:
-            if src_lower == "openalex":
-                openalex_kwargs: dict[str, object] = {
-                    "limit": limit,
-                    "year_min": year_min,
-                }
-                if openalex_email:
-                    openalex_kwargs["email"] = openalex_email
-                if openalex_api_key:
-                    openalex_kwargs["api_key"] = openalex_api_key
-                papers = search_openalex(
-                    query,
-                    **openalex_kwargs,
-                )
-                all_papers.extend(papers)
-                cache_put(query, "openalex", limit, _papers_to_dicts(papers))
-                source_stats["openalex"] = len(papers)
-                logger.info(
-                    "OpenAlex returned %d papers for %r", len(papers), query
-                )
-                time.sleep(0.5)
-
-            elif src_lower in ("semantic_scholar", "s2"):
-                papers = search_semantic_scholar(
-                    query,
-                    limit=limit,
-                    year_min=year_min,
-                    api_key=s2_api_key,
-                )
-                all_papers.extend(papers)
-                cache_put(query, "semantic_scholar", limit, _papers_to_dicts(papers))
-                source_stats["semantic_scholar"] = len(papers)
-                logger.info(
-                    "Semantic Scholar returned %d papers for %r", len(papers), query
-                )
-                # Rate-limit gap before next source
-                time.sleep(1.0)
-
-            elif src_lower == "arxiv":
-                papers = search_arxiv(query, limit=limit, year_min=year_min)
-                all_papers.extend(papers)
-                cache_put(query, "arxiv", limit, _papers_to_dicts(papers))
-                source_stats["arxiv"] = len(papers)
-                logger.info("arXiv returned %d papers for %r", len(papers), query)
-
-            elif src_lower == "openreview":
-                papers = search_openreview(query, limit=limit, year_min=year_min)
-                all_papers.extend(papers)
-                cache_put(query, "openreview", limit, _papers_to_dicts(papers))
-                source_stats["openreview"] = len(papers)
-                logger.info("OpenReview returned %d papers for %r", len(papers), query)
-                time.sleep(1.0)
-
-            elif src_lower == "crossref":
-                papers = search_crossref(
-                    query, limit=limit, year_min=year_min, email=openalex_email
-                )
-                all_papers.extend(papers)
-                cache_put(query, "crossref", limit, _papers_to_dicts(papers))
-                source_stats["crossref"] = len(papers)
-                logger.info("Crossref returned %d papers for %r", len(papers), query)
-                time.sleep(0.5)
-
-            elif src_lower == "pubmed":
-                papers = search_pubmed(
-                    query,
-                    limit=limit,
-                    year_min=year_min,
-                    api_key=pubmed_api_key,
-                    email=openalex_email,
-                )
-                all_papers.extend(papers)
-                cache_put(query, "pubmed", limit, _papers_to_dicts(papers))
-                source_stats["pubmed"] = len(papers)
-                logger.info("PubMed returned %d papers for %r", len(papers), query)
-                time.sleep(0.5)
-
-            elif src_lower == "core":
-                papers = search_core(
-                    query, limit=limit, year_min=year_min, api_key=core_api_key
-                )
-                all_papers.extend(papers)
-                cache_put(query, "core", limit, _papers_to_dicts(papers))
-                source_stats["core"] = len(papers)
-                logger.info("CORE returned %d papers for %r", len(papers), query)
-                time.sleep(0.5)
-
-            else:
-                logger.warning("Unknown literature source: %s (skipped)", src)
+            papers = spec.adapter(query, limit, year_min, keys)
+            all_papers.extend(papers)
+            cache_put(query, spec.name, limit, _papers_to_dicts(papers))
+            source_stats[spec.name] = len(papers)
+            logger.info(
+                "%s returned %d papers for %r", spec.label, len(papers), query
+            )
+            if spec.pause_sec:
+                time.sleep(spec.pause_sec)
         except (
             OSError,
             RuntimeError,
@@ -259,13 +298,16 @@ def search_papers(
             logger.warning(
                 "[rate-limit] Source %s failed for %r — trying cache", src, query
             )
-            cached = cache_get(query, cache_source, limit)
+            cached = cache_get(query, spec.name, limit)
             if cached:
                 papers = _dicts_to_papers(cached)
                 all_papers.extend(papers)
                 cache_hits += len(papers)
                 logger.info(
-                    "[cache] HIT: %d papers for %s/%r", len(papers), src, query
+                    "[cache] HIT: %d papers for %s/%r",
+                    len(papers),
+                    spec.name,
+                    query,
                 )
             else:
                 logger.warning(
@@ -299,16 +341,13 @@ def search_papers_multi_query(
     limit_per_query: int = 20,
     sources: Sequence[str] = _DEFAULT_SOURCES,
     year_min: int = 0,
-    s2_api_key: str = "",
-    openalex_email: str = "",
-    openalex_api_key: str = "",
-    pubmed_api_key: str = "",
-    core_api_key: str = "",
+    keys: SourceKeys | None = None,
     inter_query_delay: float = 1.5,
 ) -> list[Paper]:
     """Run multiple queries and return deduplicated union.
 
-    Adds a delay between queries to respect rate limits.
+    Adds a delay between queries to respect rate limits; per-source pacing
+    lives in ``_SOURCES``.
     """
     all_papers: list[Paper] = []
 
@@ -320,11 +359,7 @@ def search_papers_multi_query(
             limit=limit_per_query,
             sources=sources,
             year_min=year_min,
-            s2_api_key=s2_api_key,
-            openalex_email=openalex_email,
-            openalex_api_key=openalex_api_key,
-            pubmed_api_key=pubmed_api_key,
-            core_api_key=core_api_key,
+            keys=keys,
             deduplicate=False,  # we dedup globally below
         )
         all_papers.extend(results)

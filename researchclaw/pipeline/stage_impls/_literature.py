@@ -440,6 +440,7 @@ def _execute_literature_collect(
 
     try:
         from researchclaw.literature.search import (
+            SourceKeys,
             search_papers_multi_query,
             papers_to_bibtex,
         )
@@ -481,11 +482,13 @@ def _execute_literature_collect(
             limit_per_query=literature_config.max_results_per_query,
             sources=sources,
             year_min=year_min,
-            s2_api_key=s2_api_key,
-            openalex_email=literature_config.openalex_email,
-            openalex_api_key=openalex_api_key,
-            pubmed_api_key=pubmed_api_key,
-            core_api_key=core_api_key,
+            keys=SourceKeys(
+                s2_api_key=s2_api_key,
+                openalex_email=literature_config.openalex_email,
+                openalex_api_key=openalex_api_key,
+                pubmed_api_key=pubmed_api_key,
+                core_api_key=core_api_key,
+            ),
             inter_query_delay=literature_config.inter_query_delay_sec,
         )
         if papers:
@@ -570,8 +573,16 @@ def _execute_literature_collect(
                 max_scholar_results=config.web_search.max_scholar_results,
                 max_crawl_urls=config.web_search.max_crawl_urls,
             )
+            # Open-access links captured in candidates.jsonl (OpenAlex / S2 /
+            # arXiv / CORE) feed the PDF extractor, so the full text reaches
+            # stage-04/web_context.md instead of only titles and abstracts.
+            pdf_targets = [
+                str(c["pdf_url"]) for c in candidates if c.get("pdf_url")
+            ]
             web_result = web_agent.search_and_extract(
-                topic, search_queries=queries,
+                topic,
+                search_queries=queries,
+                pdf_urls=pdf_targets[:5] or None,
             )
 
             # Convert Google Scholar papers into candidates

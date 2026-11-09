@@ -96,8 +96,15 @@ class LLMConfig:
 def resolve_extra_headers(raw: Any) -> dict[str, str]:
     """Concrete request headers from ``llm.extra_headers``.
 
-    A value of ``"auto"`` becomes a per-client random id — some gateways
-    (OpenCode Go) require a stable session id header per conversation.
+    A value of ``"auto"`` becomes a random ``researchclaw-<hex>`` id — some
+    gateways (OpenCode Go) reject requests without a session header.
+
+    Resolution happens once per LLM client, so the generator, the reviewer
+    (``build_reviewer_llm``) and every debate panel member
+    (``build_panel_llms``, cloned from the generator's config) each carry
+    their own id: they are separate sessions by design. ``doctor`` calls this
+    with the same config, so a passing probe means the pipeline path is
+    accepted too.
     """
     if not isinstance(raw, dict):
         return {}

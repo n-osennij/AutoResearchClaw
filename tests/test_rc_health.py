@@ -193,6 +193,26 @@ def test_check_model_chain_sends_extra_headers() -> None:
     )
 
 
+def test_check_model_available_sends_extra_headers() -> None:
+    captured: dict[str, str] = {}
+
+    def fake_urlopen(request: urllib.request.Request, timeout: int = 5):
+        captured.update(dict(request.header_items()))
+        return _DummyHTTPResponse(
+            status=200, payload={"data": [{"id": "deepseek-v4.1-flash"}]}
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = health.check_model_available(
+            "https://api.example.com/v1",
+            "sk-test",
+            "deepseek-v4.1-flash",
+            {"x-opencode-session": "researchclaw-abc123"},
+        )
+    assert result.status == "pass"
+    assert captured.get("X-opencode-session") == "researchclaw-abc123"
+
+
 def test_check_api_key_invalid_401() -> None:
     with patch(
         "urllib.request.urlopen",

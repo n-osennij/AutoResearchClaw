@@ -602,13 +602,13 @@ def verify_by_title_search(
     Uses the unified ``search_papers`` function from our literature module.
     Returns *None* only on total network failure.
     """
-    from researchclaw.literature.search import search_papers
+    from researchclaw.literature.search import SourceKeys, search_papers
 
     try:
         results = search_papers(
             title,
             limit=5,
-            s2_api_key=s2_api_key,
+            keys=SourceKeys(s2_api_key=s2_api_key),
             deduplicate=True,
         )
     except Exception as exc:

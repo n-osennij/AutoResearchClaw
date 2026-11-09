@@ -10,6 +10,22 @@ treated as a hard failure so a single call cannot stall a whole pipeline stage.
 Callers keep their existing contract: they catch ``Exception`` and return an
 empty list, so a failure degrades the way every other source does.
 
+Why not every client uses this module
+-------------------------------------
+``openalex_client``, ``semantic_scholar`` and ``arxiv_client`` keep their own
+transport on purpose:
+
+- Semantic Scholar and arXiv own a **circuit breaker** whose state is driven
+  by individual 429/error responses. ``fetch_json`` retries internally, so
+  the breaker would only see the final failure and trip three times later
+  than it should.
+- OpenAlex's ``_request_with_retry`` *returns ``None``* instead of raising and
+  logs redacted URLs; migrating it would change the caller contract.
+- arXiv goes through the ``arxiv`` SDK, not raw HTTP at all.
+
+New, stateless backends (OpenReview, Crossref, PubMed, CORE) use this module.
+Migrating the three above is a separate refactor with its own test budget.
+
 Public API
 ----------
 - ``fetch_json(url, source=...)`` → decoded JSON payload

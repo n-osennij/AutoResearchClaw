@@ -227,12 +227,15 @@ def check_novelty(
 
     # Try real API search
     try:
-        from researchclaw.literature.search import search_papers_multi_query
+        from researchclaw.literature.search import (
+            SourceKeys,
+            search_papers_multi_query,
+        )
 
         found = search_papers_multi_query(
             queries,
             limit_per_query=min(15, max_search_results),
-            s2_api_key=s2_api_key,
+            keys=SourceKeys(s2_api_key=s2_api_key),
         )
         total_papers_retrieved = len(found)
         for paper in found[:max_search_results]:
