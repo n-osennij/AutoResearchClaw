@@ -113,6 +113,59 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+def _str_tuple(value: Any) -> tuple[str, ...]:
+    """Coerce a JSON list/str into a tuple of non-empty strings."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(str(item) for item in value if str(item).strip())
+
+
+def _paper_from_candidate(candidate: dict[str, Any]) -> Any:
+    """Build a ``Paper`` from a raw candidate dict.
+
+    Only Stage 4's degraded paths (LLM-written candidates) need this: the
+    dictionaries there carry whatever the model invented, so every field is
+    coerced and nothing is trusted to be present.
+    """
+    from researchclaw.literature.models import Author, Paper
+
+    raw_authors = candidate.get("authors")
+    authors: list[Author] = []
+    if isinstance(raw_authors, list | tuple):
+        for entry in raw_authors:
+            name = entry.get("name") if isinstance(entry, dict) else entry
+            if isinstance(name, str) and name.strip():
+                authors.append(Author(name=name.strip()))
+    return Paper(
+        paper_id=str(candidate.get("id") or candidate.get("paper_id") or ""),
+        title=str(candidate.get("title") or ""),
+        authors=tuple(authors),
+        year=_coerce_int(candidate.get("year"), 0),
+        abstract=str(candidate.get("abstract") or ""),
+        venue=str(candidate.get("venue") or ""),
+        doi=str(candidate.get("doi") or ""),
+        arxiv_id=str(candidate.get("arxiv_id") or ""),
+        url=str(candidate.get("url") or ""),
+        source=str(candidate.get("source") or ""),
+        pmid=str(candidate.get("pmid") or ""),
+        is_preprint=bool(candidate.get("is_preprint")),
+        pub_types=_str_tuple(candidate.get("pub_types")),
+        mesh_terms=_str_tuple(candidate.get("mesh_terms")),
+        retracted=bool(candidate.get("retracted")),
+        concern=bool(candidate.get("concern")),
+    )
+
+
+def _entry_key(entry: str) -> str:
+    """Extract ``key`` from a rendered ``@type{key, ...}`` entry."""
+    try:
+        return entry.split("{", 1)[1].split(",", 1)[0].strip()
+    except IndexError:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Stage executors
 # ---------------------------------------------------------------------------
@@ -906,48 +959,22 @@ def _execute_literature_collect(
     _write_jsonl(out, candidates)
 
     # BUG-50 fix: Generate BibTeX from candidates when real search failed
-    # (LLM/placeholder fallback paths don't populate bibtex_entries)
+    # (LLM/placeholder fallback paths don't populate bibtex_entries).
+    # Rendered through ``Paper.to_bibtex`` instead of string templates: this is
+    # the degraded-metadata path, which is exactly where a raw ``&`` in a title
+    # or a missing year used to corrupt references.bib.
     if not bibtex_entries and candidates:
-        for c in candidates:
-            if c.get("is_placeholder"):
+        from researchclaw.literature.search import uniquify_bibtex_entry
+
+        for candidate in candidates:
+            if candidate.get("is_placeholder"):
                 continue
-            _ck = c.get("cite_key", "")
-            if not _ck:
-                # Derive cite_key from first author surname + year
-                _authors = c.get("authors", [])
-                _surname = "unknown"
-                if isinstance(_authors, list) and _authors:
-                    _a0 = _authors[0] if isinstance(_authors[0], str) else (_authors[0].get("name", "") if isinstance(_authors[0], dict) else "")
-                    _surname = _a0.split()[-1].lower() if _a0.strip() else "unknown"
-                _yr = c.get("year", 2024)
-                _title_word = "".join(
-                    w[0] for w in str(c.get("title", "study")).split()[:3]
-                ).lower()
-                _ck = f"{_surname}{_yr}{_title_word}"
-            # Same key must be advertised downstream and written here.
-            _ck, _ = uniquify_bibtex_entry(f"@article{{{_ck}, x=1}}", bibtex_keys)
-            _ck = _ck.split("{", 1)[1].split(",", 1)[0]
-            c["cite_key"] = _ck
-            _title = c.get("title", "Untitled")
-            _year = c.get("year", 2024)
-            _author_str = ""
-            _raw_authors = c.get("authors", [])
-            if isinstance(_raw_authors, list):
-                _names = []
-                for _a in _raw_authors:
-                    if isinstance(_a, str):
-                        _names.append(_a)
-                    elif isinstance(_a, dict):
-                        _names.append(_a.get("name", ""))
-                _author_str = " and ".join(n for n in _names if n)
-            bibtex_entries.append(
-                f"@article{{{_ck},\n"
-                f"  title={{{_title}}},\n"
-                f"  author={{{_author_str or 'Unknown'}}},\n"
-                f"  year={{{_year}}},\n"
-                f"  url={{{c.get('url', '')}}},\n"
-                f"}}"
+            entry, _unique_key = uniquify_bibtex_entry(
+                _paper_from_candidate(candidate).to_bibtex(), bibtex_keys
             )
+            # Same key must be advertised downstream and written here.
+            candidate["cite_key"] = _entry_key(entry)
+            bibtex_entries.append(entry)
         logger.info(
             "Stage 4: Generated %d BibTeX entries from candidates (fallback)",
             len(bibtex_entries),

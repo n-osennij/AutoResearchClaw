@@ -7,13 +7,40 @@ and ``Paper.cite_key`` returns a normalised citation key.
 
 from __future__ import annotations
 
+import hashlib
+import html
 import re
+import urllib.parse
 import unicodedata
 from dataclasses import dataclass, field
 
 _DOI_PREFIX_RE = re.compile(
     r"^(?:https?://(?:dx\.)?doi\.org/|doi:)\s*", re.IGNORECASE
 )
+
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _plain(text: str) -> str:
+    """Strip provider markup from a metadata string.
+
+    Crossref, Semantic Scholar and OpenAlex all hand back HTML fragments
+    (``<i>``, ``<sub>``, ``&amp;``) in titles and venue names. Escaping those
+    as BibTeX would print the tags; stripping them first is the only
+    character-level answer that does not need a full LaTeX tokeniser. Control
+    whitespace (tabs, newlines from API payloads) collapses to a single space
+    because a newline inside a ``title = {...}`` field breaks the entry.
+    """
+    value = _HTML_TAG_RE.sub("", text or "")
+    value = html.unescape(value)
+    return _WHITESPACE_RE.sub(" ", value).strip()
+
+
+def _ascii_fold(text: str) -> str:
+    """Fold accents to ASCII, dropping characters with no ASCII form."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return decomposed.encode("ascii", "ignore").decode("ascii")
 
 
 def normalise_doi(value: str) -> str:
@@ -34,13 +61,76 @@ class Author:
     affiliation: str = ""
 
     def last_name(self) -> str:
-        """Return ASCII-folded last name for citation keys."""
-        parts = self.name.strip().split()
-        raw = parts[-1] if parts else "unknown"
-        # Fold accented characters to ASCII
-        nfkd = unicodedata.normalize("NFKD", raw)
-        ascii_name = nfkd.encode("ascii", "ignore").decode("ascii")
-        return re.sub(r"[^a-zA-Z]", "", ascii_name).lower() or "unknown"
+        """Return an ASCII key component for citation keys.
+
+        Handles the shapes that actually appear in provider metadata:
+        ``Smith, John`` (comma convention), ``John Smith Jr.`` (suffix),
+        ``The Global Burden of Disease Study`` (collective name — PubMed
+        ``CollectiveName``, where the *last* word is never the surname), and
+        non-Latin names, which fold to nothing and would otherwise collapse
+        every Cyrillic/CJK paper onto ``unknown``.
+        """
+        raw = _author_name(self.name)
+        if not raw:
+            return "unknown"
+        folded = _ascii_fold(raw)
+        if not folded.strip():
+            # Non-Latin script: no ASCII form exists, so keep a stable short
+            # digest of the raw name. Unique enough for cite keys, and much
+            # better than mapping every such paper onto ``unknown``.
+            digest = hashlib.blake2s(raw.encode("utf-8"), digest_size=2).hexdigest()
+            return f"u{digest}"
+        if "," in folded:
+            # ``Smith, John`` / ``Smith, Jr., J.``: the surname is before the
+            # first comma, which is exactly what the comma convention means.
+            return _key_part(folded.split(",", 1)[0])
+        words = [w for w in folded.split() if w.strip(".").lower() not in _NAME_SUFFIXES]
+        if not words:
+            words = folded.split()
+        if _COLLECTIVE_RE.search(folded):
+            # Collective author: the first meaningful word identifies it far
+            # better than the trailing ``Study``/``Group``.
+            meaningful = [
+                w for w in words if _ascii_fold(w).lower() not in _STOPWORDS
+            ]
+            return _key_part((meaningful or words)[0])
+        return _key_part(words[-1])
+
+
+_NAME_SUFFIXES = {
+    "jr",
+    "jr.",
+    "sr",
+    "sr.",
+    "ii",
+    "iii",
+    "iv",
+    "phd",
+    "md",
+    "msc",
+    "bsc",
+}
+
+# A collective name has no surname; these words are the tell.
+_COLLECTIVE_RE = re.compile(
+    r"\b(group|consortium|committee|collaboration|team|study|organisation|"
+    r"organization|institute|university|department|society|network|initiative|"
+    r"consortium|foundation|agency|association)\b",
+    re.IGNORECASE,
+)
+
+
+def _author_name(name: str) -> str:
+    """Normalise an author name, dropping ``et al.`` and stray punctuation."""
+    value = _WHITESPACE_RE.sub(" ", (name or "").strip())
+    value = re.sub(r"\bet\s+al\.?", "", value, flags=re.IGNORECASE).strip(" ,;")
+    return value
+
+
+def _key_part(text: str) -> str:
+    """Lowercase ASCII slug suitable for a cite key."""
+    slug = re.sub(r"[^a-z0-9]", "", _ascii_fold(text).lower())
+    return slug[:20] or "unknown"
 
 
 @dataclass(frozen=True)
@@ -76,7 +166,9 @@ class Paper:
     # "Expression of Concern": citable but flagged; unlike ``retracted`` this
     # must never cause the paper to be dropped.
     concern: bool = False
-    _bibtex_override: str = field(default="", repr=False)
+    # Not part of identity: a cache-restored record must compare equal to the
+    # same record fetched fresh, override or not.
+    _bibtex_override: str = field(default="", repr=False, compare=False)
 
     # ------------------------------------------------------------------
     # Citation key
@@ -86,7 +178,11 @@ class Paper:
     def cite_key(self) -> str:
         """Normalised citation key: ``lastname<year><keyword>``.
 
-        Example: ``smith2024transformer``
+        Example: ``smith2024transformer``. Not guaranteed unique — two
+        papers by the same author in the same year collapse to one key, so
+        anything that emits a bibliography must pass the entries through
+        ``papers_to_bibtex``/``dedupe_bibtex_entries`` (which is keyed on
+        the rendered text, overrides included).
         """
         last = self.authors[0].last_name() if self.authors else "anon"
         yr = str(self.year) if self.year else "0000"
@@ -121,72 +217,60 @@ class Paper:
                 return override
 
         key = self.cite_key
-        authors_str = " and ".join(_bibtex_escape(a.name) for a in self.authors) or "Unknown"
+        names = [
+            _bibtex_escape(a.name) for a in self.authors if (a.name or "").strip()
+        ]
+        authors_str = " and ".join(names) or "Unknown"
 
-        # T1.4: Detect arXiv category codes used as venue (e.g. "cs.CY", "math.OC")
-        # These are NOT journal names and must be treated as arXiv preprints.
-        _venue = self.venue or ""
-        _is_arxiv_category = bool(
-            re.match(
-                r"^(?:cs|math|stat|eess|physics|q-bio|q-fin|astro-ph|cond-mat|"
-                r"gr-qc|hep-ex|hep-lat|hep-ph|hep-th|nlin|nucl-ex|nucl-th|"
-                r"quant-ph)\.[A-Z]{2}$",
-                _venue,
-            )
-        )
+        venue = _plain(self.venue)
+        arxiv_venue = _is_arxiv_venue(venue)
 
-        # Decide entry type
-        if _venue and not _is_arxiv_category and any(
-            kw in _venue.lower()
-            for kw in (
-                "conference",
-                "proc",
-                "workshop",
-                "neurips",
-                "icml",
-                "iclr",
-                "aaai",
-                "cvpr",
-                "acl",
-                "emnlp",
-                "naacl",
-                "eccv",
-                "iccv",
-                "sigir",
-                "kdd",
-                "www",
-                "ijcai",
-            )
-        ):
+        notes: list[str] = []
+        if venue and not arxiv_venue and _CONFERENCE_RE.search(venue.lower()):
             entry_type = "inproceedings"
-            venue_field = f"  booktitle = {{{_bibtex_escape(_venue)}}},"
+            venue_field = f"  booktitle = {{{_bibtex_escape(venue)}}},"
         elif self.is_preprint:
-            # bioRxiv / medRxiv / Research Square: no journal, no volume —
-            # the canonical entry is @misc naming the preprint server, with
-            # a plain url field instead of a \url{} macro (no LaTeX package
-            # assumption for whoever imports references.bib).
+            # bioRxiv / medRxiv / Research Square: no journal, no volume. The
+            # canonical entry names the server in ``howpublished``; when the
+            # provider left ``venue`` empty, recover the server from the url
+            # rather than emit an entry with no provenance at all.
             entry_type = "misc"
+            server = venue or _preprint_server(self.url)
             venue_field = (
-                f"  howpublished = {{{_bibtex_escape(_venue)}}},"
-                if _venue
-                else ""
+                f"  howpublished = {{{_bibtex_escape(server)}}}," if server else ""
             )
-        elif self.arxiv_id and (not _venue or _is_arxiv_category):
+            if self.arxiv_id and server != "arXiv":
+                # Classic styles ignore ``eprint`` on @misc; the note is what
+                # survives there.
+                notes.append(f"arXiv preprint arXiv:{self.arxiv_id}")
+        elif self.arxiv_id and (not venue or arxiv_venue):
             # arXiv paper: use standard format with eprint ID
             entry_type = "article"
             venue_field = f"  journal = {{arXiv preprint arXiv:{self.arxiv_id}}},"
+        elif venue:
+            entry_type = "article"
+            venue_field = f"  journal = {{{_bibtex_escape(venue)}}},"
         else:
             entry_type = "article"
-            venue_field = (
-                f"  journal = {{{_bibtex_escape(_venue or 'Unknown')}}}," if _venue else ""
-            )
+            venue_field = ""
+
+        if self.retracted:
+            notes.insert(0, "RETRACTED")
+        elif self.concern:
+            notes.insert(0, "Expression of concern")
 
         lines = [f"@{entry_type}{{{key},"]
         lines.append(f"  title = {{{_bibtex_escape(self.title)}}},")
         lines.append(f"  author = {{{authors_str}}},")
-        lines.append(f"  year = {{{self.year or 'Unknown'}}},")
+        # No ``year = {Unknown}``: a non-numeric year breaks numeric sorting in
+        # plain/unsrt and prints "Unknown" under natbib. Omitting the field is
+        # what every reference manager does for an undated record.
+        if self.year:
+            lines.append(f"  year = {{{self.year}}},")
         if venue_field:
             lines.append(venue_field)
+        if notes:
+            lines.append(f"  note = {{{' ; '.join(notes)}}},")
         if self.doi:
             lines.append(f"  doi = {{{_bibtex_escape_url(normalise_doi(self.doi))}}},")
         if self.arxiv_id:
@@ -195,6 +279,7 @@ class Paper:
         if self.url:
             lines.append(f"  url = {{{_bibtex_escape_url(self.url)}}},")
         lines.append("}")
+        return "\n".join(lines)
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -228,37 +313,107 @@ class Paper:
         }
 
 
-# BibTeX treats these as markup; an unescaped "&" in a title is a broken
-# .bib file that Zotero/Overleaf silently truncate.
-_BIBTEX_SPECIALS = {
-    "\\": r"\textbackslash{}",
-    "&": r"\&",
-    "%": r"\%",
-    "$": r"\$",
-    "#": r"\#",
-    "_": r"\_",
-    "{": r"\{",
-    "}": r"\}",
-    "~": r"\textasciitilde{}",
-    "^": r"\textasciicircum{}",
+_CONFERENCE_RE = re.compile(
+    r"\b(conference|proceedings|workshop|neurips|nips|icml|iclr|aaai|cvpr|"
+    r"iccv|eccv|acl|emnlp|naacl|sigir|kdd|www|ijcai)\b"
+)
+
+# arXiv category codes that providers put into ``venue`` instead of a
+# journal. Dotted archives (``cs.CY``, ``cond-mat.mtrl-sci``) and the bare
+# endonyms (``quant-ph``) are the two shapes the APIs emit.
+_ARXIV_PLAIN_VENUES = {
+    "cs", "math", "stat", "eess", "physics", "q-bio", "q-fin", "nlin", "econ",
+    "astro-ph", "cond-mat", "gr-qc", "math-ph", "quant-ph", "hep-ex",
+    "hep-lat", "hep-ph", "hep-th", "nucl-ex", "nucl-th",
+}
+_ARXIV_ARCHIVE_RE = re.compile(
+    r"^(?:cs|math|stat|eess|physics|q-bio|q-fin|astro-ph|cond-mat|gr-qc|"
+    r"math-ph|quant-ph|hep-ex|hep-lat|hep-ph|hep-th|nucl-ex|nucl-th|nlin|econ)"
+    r"\.[A-Za-z][A-Za-z-]*$"
+)
+
+_PREPRINT_HOSTS = {
+    "biorxiv.org": "bioRxiv",
+    "medrxiv.org": "medRxiv",
+    "arxiv.org": "arXiv",
+    "ssrn.com": "SSRN",
+    "researchsquare.com": "Research Square",
+    "preprints.org": "Preprints.org",
+    "techrxiv.org": "TechRxiv",
+    "chemrxiv.org": "ChemRxiv",
+    "authorea.com": "Authorea",
+    "osf.io": "OSF Preprints",
 }
 
 
+def _is_arxiv_venue(venue: str) -> bool:
+    """True for the arXiv category codes that leak into ``venue``."""
+    text = (venue or "").strip()
+    if not text:
+        return False
+    return text.lower() in _ARXIV_PLAIN_VENUES or bool(
+        _ARXIV_ARCHIVE_RE.match(text)
+    )
+
+
+def _preprint_server(url: str) -> str:
+    """Recover the preprint server name from a record url."""
+    host = urllib.parse.urlsplit(url or "").netloc.lower()
+    for domain, label in _PREPRINT_HOSTS.items():
+        if host == domain or host.endswith("." + domain):
+            return label
+    return ""
+
+
+# Characters that break a field when unescaped. Deliberately excludes ``\\``,
+# ``{``/``}`` and ``$``: providers ship real LaTeX (``R{\'i}os``, ``$x_1$``,
+# ``{World Health Organization}``) and escaping that prints the markup in the
+# PDF instead of the symbol it encodes.
+_BIBTEX_SPECIALS = {
+    "&": r"\&",
+    "%": r"\%",
+    "#": r"\#",
+    "_": r"\_",
+    "$": r"\$",
+    "~": "\\textasciitilde{}",
+    "^": "\\textasciicircum{}",
+}
+
+# A backslash or a balanced pair of dollar signs means the value already *is*
+# LaTeX. Escaping it again yields a visible backslash in the PDF (``100\%``)
+# and destroys math mode.
+_LATEX_MARKUP_RE = re.compile(r"\\|\$[^$]*\$")
+
+
 def _bibtex_escape(text: str) -> str:
-    """Escape the characters BibTeX reads as markup."""
-    return "".join(_BIBTEX_SPECIALS.get(ch, ch) for ch in text)
+    """Escape a metadata value for a BibTeX field."""
+    value = _plain(text)
+    if _LATEX_MARKUP_RE.search(value):
+        return value
+    escaped = "".join(_BIBTEX_SPECIALS.get(ch, ch) for ch in value)
+    if escaped.count("{") != escaped.count("}"):
+        # Unbalanced protection braces close the field early; drop them.
+        escaped = escaped.replace("{", "").replace("}", "")
+    return escaped
 
 
-# In a url/doi/eprint field only these are actually dangerous: ``%`` starts a
-# LaTeX comment and an unbalanced brace ends the field early. Backslashes are
-# escaped too, since a Windows-style path in a url would otherwise be read as
-# a command.
-_URL_SPECIALS = {"%": r"\%", "{": r"\{", "}": r"\}", "\\": r"\textbackslash{}"}
+# In a url/doi/eprint field a raw ``%`` truncates the entry at the comment and
+# a raw ``#`` raises "Illegal parameter number"; braces and backslashes end or
+# corrupt the field. Escaping is cosmetic for ``\url{}`` consumers, but a
+# truncated entry loses the reference outright, so escape.
+_URL_SPECIALS = {
+    "%": r"\%",
+    "#": r"\#",
+    "&": r"\&",
+    "{": r"\{",
+    "}": r"\}",
+    "\\": r"\textbackslash{}",
+}
 
 
 def _bibtex_escape_url(text: str) -> str:
     """Escape a URL/DOI for a BibTeX field."""
-    return "".join(_URL_SPECIALS.get(ch, ch) for ch in text)
+    return "".join(_URL_SPECIALS.get(ch, ch) for ch in _plain(text))
 
 
 def _looks_like_bibtex(entry: str) -> bool:

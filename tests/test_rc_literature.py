@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import researchclaw.literature._http as _http
-from researchclaw.literature.models import Author, Paper
+from researchclaw.literature.models import Author, Paper, _bibtex_escape
 from researchclaw.literature.core_client import (
     _to_paper as _core_to_paper,
     search_core,
@@ -146,6 +146,33 @@ class TestAuthor:
     def test_last_name_empty(self) -> None:
         a = Author(name="")
         assert a.last_name() == "unknown"
+
+    def test_comma_convention(self) -> None:
+        # ``Smith, John`` is the MEDLINE/Crossref shape; the surname is before
+        # the comma, not the last whitespace token.
+        assert Author(name="Smith, John").last_name() == "smith"
+        assert Author(name="Smith, Jr., John").last_name() == "smith"
+
+    def test_name_suffix_is_not_the_surname(self) -> None:
+        assert Author(name="John Smith Jr.").last_name() == "smith"
+        assert Author(name="J. Smith III").last_name() == "smith"
+
+    def test_collective_name(self) -> None:
+        # PubMed even ships these as ``CollectiveName``; the trailing word is
+        # never a surname.
+        assert Author(name="The Global Burden of Disease Study").last_name() == "global"
+
+    def test_et_al_is_dropped(self) -> None:
+        assert Author(name="Jane Smith et al.").last_name() == "smith"
+
+    def test_non_latin_name_stays_unique(self) -> None:
+        # Folding to ASCII yields nothing; a stable hash beats mapping every
+        # Cyrillic/CJK author onto ``unknown``.
+        ivanov = Author(name="Иванов").last_name()
+        zhang = Author(name="张伟").last_name()
+        assert ivanov != "unknown" and zhang != "unknown"
+        assert ivanov != zhang
+        assert Author(name="Иванов").last_name() == ivanov  # deterministic
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -452,8 +479,44 @@ class TestBibtexEscaping:
         assert r"50\%" in bib
         assert r"\$100" in bib
         assert r"\#1" in bib
-        assert r"\{a\}" in bib
+        # Protection braces are legitimate LaTeX (they keep "a" lowercase) and
+        # are passed through; only unbalanced ones get stripped.
+        assert r"{a}" in bib
         assert r"\_b" in bib
+
+    def test_latex_markup_is_not_double_escaped(self) -> None:
+        # Crossref sends accented names as LaTeX; escaping the backslash would
+        # print ``R\{'i\}os`` in the PDF.
+        assert r"R{\'i}os" == _bibtex_escape(r"R{\'i}os")
+        assert r"100\% accurate" == _bibtex_escape(r"100\% accurate")
+        # Inline math survives intact.
+        assert "O(n log n) $x_1$" == _bibtex_escape("O(n log n) $x_1$")
+
+    def test_html_markup_is_stripped_not_escaped(self) -> None:
+        assert "Deep Nets \\& Co" == _bibtex_escape("Deep <i>Nets</i> &amp; Co")
+
+    def test_unbalanced_brace_is_dropped(self) -> None:
+        assert "{" not in _bibtex_escape("half {open")
+
+    def test_unknown_year_is_omitted(self) -> None:
+        bib = _make_paper(title="Undated", year=0).to_bibtex()
+        assert "year =" not in bib
+
+    def test_retraction_is_carried_into_the_note(self) -> None:
+        bib = replace(_make_paper(title="Bad paper"), retracted=True).to_bibtex()
+        assert "note = {RETRACTED}" in bib
+
+    def test_preprint_server_recovered_from_url(self) -> None:
+        bib = replace(
+            _make_paper(
+                paper_id="PPR1",
+                source="europepmc",
+                venue="",
+                url="https://www.medrxiv.org/content/10.1101/x",
+            ),
+            is_preprint=True,
+        ).to_bibtex()
+        assert "howpublished = {medRxiv}" in bib
 
     def test_tilde_and_caret_render_as_latex_macros(self) -> None:
         paper = _make_paper(title="a~b^c", source="pubmed")
@@ -2199,3 +2262,34 @@ class TestVerifyCacheIsolation:
         ).hexdigest()[:16]
         assert verify_mod._cache_key("A Paper") == expected
 
+
+
+class TestStage4FallbackBibtex:
+    """The degraded Stage-4 path must not emit raw markup into references.bib."""
+
+    def test_candidate_dict_renders_escaped_entry(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import (
+            _entry_key,
+            _paper_from_candidate,
+        )
+
+        entry = _paper_from_candidate(
+            {
+                "id": "c1",
+                "title": "Deep <i>Nets</i> & 50% gains",
+                "authors": [{"name": "Jane Smith"}, "Wei Zhang", {"nope": 1}],
+                "year": "not-a-year",
+                "url": "https://example.org/a_b",
+                "is_preprint": True,
+                "venue": "bioRxiv",
+            }
+        ).to_bibtex()
+        assert r"Deep Nets \& 50\% gains" in entry
+        assert "year =" not in entry  # unparseable year is dropped, not "Unknown"
+        assert "howpublished = {bioRxiv}" in entry
+        assert _entry_key(entry) == "smith0000deep"
+
+    def test_entry_key_handles_garbage(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _entry_key
+
+        assert _entry_key("no braces here") == ""
