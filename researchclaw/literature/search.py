@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 # Europe PMC / CORE are additive sources appended by the caller when the domain
 # needs them.
 _DEFAULT_SOURCES = ("openalex", "semantic_scholar", "arxiv")
+# Cap per search_papers() call. 15 min is enough for eight healthy backends and
+# short enough that a stuck one cannot swallow an entire stage.
+DEFAULT_SEARCH_DEADLINE_SEC = 900.0
 
 
 @dataclass(frozen=True)
@@ -181,10 +184,6 @@ def normalise_source(name: str) -> str:
     return name.lower().replace("-", "_").replace(" ", "_")
 
 
-# Backwards-compatible alias: the pipeline and tests imported the private name.
-_normalise_source = normalise_source
-
-
 CacheGet = Callable[[str, str, int, int], list[dict[str, object]] | None]
 CachePut = Callable[[str, str, int, list[dict[str, object]], int], None]
 
@@ -232,43 +231,9 @@ def _dicts_to_papers(dicts: list[dict[str, object]]) -> list[Paper]:
     papers: list[Paper] = []
     for d in dicts:
         try:
-            authors_raw = d.get("authors", ())
-            if not isinstance(authors_raw, list):
-                authors_raw = []
-            authors = tuple(
-                Author(
-                    name=str(cast(dict[str, object], a).get("name", "")),
-                    affiliation=str(cast(dict[str, object], a).get("affiliation", "")),
-                )
-                for a in authors_raw
-                if isinstance(a, dict)
-            )
-            paper_id = cast(str, d["paper_id"])
-            title = cast(str, d["title"])
-            papers.append(
-                Paper(
-                    paper_id=paper_id,
-                    title=title,
-                    authors=authors,
-                    year=_as_int(d.get("year", 0), 0),
-                    abstract=str(d.get("abstract", "")),
-                    venue=str(d.get("venue", "")),
-                    citation_count=_as_int(d.get("citation_count", 0), 0),
-                    doi=str(d.get("doi", "")),
-                    arxiv_id=str(d.get("arxiv_id", "")),
-                    url=str(d.get("url", "")),
-                    pdf_url=str(d.get("pdf_url", "")),
-                    source=str(d.get("source", "")),
-                    pmid=str(d.get("pmid", "")),
-                    is_preprint=bool(d.get("is_preprint", False)),
-                    pub_types=_as_str_tuple(d.get("pub_types")),
-                    mesh_terms=_as_str_tuple(d.get("mesh_terms")),
-                    retracted=bool(d.get("retracted", False)),
-                    concern=bool(d.get("concern", False)),
-                    _bibtex_override=str(d.get("_bibtex_override", "")),
-                )
-            )
+            papers.append(Paper.from_dict(d))
         except (KeyError, TypeError, ValueError):
+            # One corrupt cache entry must not lose the whole result set.
             continue
     return papers
 
@@ -281,6 +246,7 @@ def search_papers(
     year_min: int = 0,
     deduplicate: bool = True,
     keys: SourceKeys | None = None,
+    deadline_sec: float = DEFAULT_SEARCH_DEADLINE_SEC,
 ) -> list[Paper]:
     """Search multiple academic sources and return deduplicated results.
 
@@ -301,6 +267,11 @@ def search_papers(
     keys:
         Credentials for the backends (see :class:`SourceKeys`). ``None`` means
         "no keys configured", which is enough for OpenAlex and arXiv.
+    deadline_sec:
+        Wall-clock budget for the whole call. Each backend can retry for
+        minutes (arXiv is unbounded), and a stage runs ~13 queries, so without
+        a budget a slow day at one source turns into hours and then looks like
+        a hang. ``0`` disables the budget.
 
     Returns
     -------
@@ -316,9 +287,20 @@ def search_papers(
     source_stats: dict[str, int] = {}  # track per-source counts
     cache_hits = 0
 
+    started = time.monotonic()
     seen_specs: set[str] = set()
     for src in sources:
-        spec = _SOURCES.get(_normalise_source(src))
+        if deadline_sec > 0 and time.monotonic() - started > deadline_sec:
+            logger.warning(
+                "Literature search deadline (%.0fs) reached after %d/%d sources; "
+                "returning %d paper(s) found so far",
+                deadline_sec,
+                len(seen_specs),
+                len(sources),
+                len(all_papers),
+            )
+            break
+        spec = _SOURCES.get(normalise_source(src))
         if spec is None:
             logger.warning("Unknown literature source: %s (skipped)", src)
             continue
@@ -330,7 +312,12 @@ def search_papers(
         try:
             papers = spec.adapter(query, limit, year_min, keys)
             all_papers.extend(papers)
-            cache_put(query, spec.name, limit, _papers_to_dicts(papers), year_min)
+            # Only cache non-empty answers: an adapter returns [] both for "no
+            # hits" and for "the source is down", and the TTL is days long, so
+            # caching the failure would make one 503 hide real papers until the
+            # entry expires.
+            if papers:
+                cache_put(query, spec.name, limit, _papers_to_dicts(papers), year_min)
             source_stats[spec.name] = len(papers)
             logger.info(
                 "%s returned %d papers for %r", spec.label, len(papers), query
@@ -450,7 +437,7 @@ _GREEK_FOLD = str.maketrans(
 )
 
 
-def _normalise_title(title: str) -> str:
+def normalise_title(title: str) -> str:
     """Lower-case, fold accents, strip punctuation, collapse whitespace.
 
     NFKD runs *first*: it decomposes accented Latin (``é`` → ``e`` +
@@ -539,7 +526,7 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
             seen_doi[normalise_doi(p.doi)] = idx
         if p.arxiv_id:
             seen_arxiv[p.arxiv_id.strip()] = idx
-        norm = _normalise_title(p.title)
+        norm = normalise_title(p.title)
         if norm and _title_is_latin(p.title):
             seen_title[norm] = idx
 
@@ -586,7 +573,7 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
 
         # Check fuzzy title
         if not is_dup:
-            norm = _normalise_title(paper.title)
+            norm = normalise_title(paper.title)
             if norm and norm in seen_title:
                 idx = seen_title[norm]
                 _merge_duplicate(idx, paper)

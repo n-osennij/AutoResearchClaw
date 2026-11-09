@@ -21,7 +21,6 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any
 
 try:
     import arxiv  # pip install arxiv
@@ -49,23 +48,29 @@ _cb_consecutive_429s: int = 0
 _cb_cooldown_sec: float = _CB_INITIAL_COOLDOWN
 _cb_open_since: float = 0.0
 _cb_trip_count: int = 0
+# True while a HALF_OPEN probe is in flight. Without it every waiting thread
+# probes at cooldown expiry, and the extra 429s hit the HALF_OPEN branch of
+# ``_cb_on_failure`` — which doubles the cooldown and re-opens the breaker, so
+# it can never return to CLOSED after a burst.
+_cb_probe_in_flight: bool = False
 _cb_lock = threading.Lock()
 
 
 def _reset_circuit_breaker() -> None:
     """Reset circuit breaker state (for tests)."""
     global _cb_state, _cb_consecutive_429s, _cb_cooldown_sec  # noqa: PLW0603
-    global _cb_open_since, _cb_trip_count  # noqa: PLW0603
+    global _cb_open_since, _cb_trip_count, _cb_probe_in_flight  # noqa: PLW0603
     with _cb_lock:
         _cb_state = _CB_CLOSED
         _cb_consecutive_429s = 0
         _cb_cooldown_sec = _CB_INITIAL_COOLDOWN
         _cb_open_since = 0.0
         _cb_trip_count = 0
+        _cb_probe_in_flight = False
 
 
 def _cb_should_allow() -> bool:
-    global _cb_state  # noqa: PLW0603
+    global _cb_state, _cb_probe_in_flight  # noqa: PLW0603
     with _cb_lock:
         if _cb_state == _CB_CLOSED:
             return True
@@ -73,16 +78,23 @@ def _cb_should_allow() -> bool:
             elapsed = time.monotonic() - _cb_open_since
             if elapsed >= _cb_cooldown_sec:
                 _cb_state = _CB_HALF_OPEN
+                _cb_probe_in_flight = True
                 logger.info("arXiv circuit breaker → HALF_OPEN (%.0fs cooldown elapsed)", elapsed)
                 return True
             return False
-        return True  # HALF_OPEN: allow probe
+        # HALF_OPEN: exactly one probe at a time.
+        if _cb_probe_in_flight:
+            return False
+        _cb_probe_in_flight = True
+        return True
 
 
 def _cb_on_success() -> None:
     global _cb_state, _cb_consecutive_429s, _cb_cooldown_sec  # noqa: PLW0603
+    global _cb_probe_in_flight  # noqa: PLW0603
     with _cb_lock:
         _cb_consecutive_429s = 0
+        _cb_probe_in_flight = False
         if _cb_state != _CB_CLOSED:
             logger.info("arXiv circuit breaker → CLOSED (request succeeded)")
             _cb_state = _CB_CLOSED
@@ -91,9 +103,10 @@ def _cb_on_success() -> None:
 
 def _cb_on_failure() -> bool:
     global _cb_state, _cb_consecutive_429s, _cb_cooldown_sec  # noqa: PLW0603
-    global _cb_open_since, _cb_trip_count  # noqa: PLW0603
+    global _cb_open_since, _cb_trip_count, _cb_probe_in_flight  # noqa: PLW0603
     with _cb_lock:
         _cb_consecutive_429s += 1
+        _cb_probe_in_flight = False
         if _cb_state == _CB_HALF_OPEN or _cb_consecutive_429s >= _CB_THRESHOLD:
             if _cb_state == _CB_HALF_OPEN:
                 _cb_cooldown_sec = min(_cb_cooldown_sec * 2, _CB_MAX_COOLDOWN)
@@ -113,17 +126,41 @@ def _cb_on_failure() -> bool:
 # ---------------------------------------------------------------------------
 
 _client: arxiv.Client | None = None
+_client_lock = threading.Lock()
+
+
+# The vendored ``arxiv`` library calls ``session.get(url)`` with no timeout, so
+# a black-holed connection blocks forever — and ``execute_stage`` is not
+# wrapped in a timeout either, so the whole run stalls silently. Give the
+# session a hard connect/read budget.
+_ARXIV_CONNECT_TIMEOUT = 10.0
+_ARXIV_READ_TIMEOUT = 60.0
 
 
 def _get_client() -> arxiv.Client:
     """Get or create the shared arxiv Client."""
     global _client  # noqa: PLW0603
-    if _client is None:
-        _client = arxiv.Client(
-            page_size=100,       # fetch up to 100 per API call
-            delay_seconds=3.1,   # arXiv requires ≥3s between requests
-            num_retries=3,       # built-in retry on failure
-        )
+    if _client is not None:
+        return _client
+    # Two pipeline runs in one process (MCP spawns a thread per run) must
+    # share one Client: each has its own 3 s pacing, so two clients double the
+    # arXiv request rate and get the breaker tripped.
+    with _client_lock:
+        if _client is None:
+            _client = arxiv.Client(
+                page_size=100,       # fetch up to 100 per API call
+                delay_seconds=3.1,   # arXiv requires ≥3s between requests
+                num_retries=3,       # built-in retry on failure
+            )
+            session = getattr(_client, "_session", None)
+            if session is not None and hasattr(session, "request"):
+                original = session.request
+
+                def _request_with_timeout(method, url, **kwargs):  # noqa: ANN001
+                    kwargs.setdefault("timeout", (_ARXIV_CONNECT_TIMEOUT, _ARXIV_READ_TIMEOUT))
+                    return original(method, url, **kwargs)
+
+                session.request = _request_with_timeout  # type: ignore[method-assign]
     return _client
 
 

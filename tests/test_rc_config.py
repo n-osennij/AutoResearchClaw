@@ -396,3 +396,51 @@ def test_load_uses_file_parent_as_default_project_root(tmp_path: Path):
 
     assert config.project.name == "demo"
     assert config.knowledge_base.root == "docs/kb"
+
+
+def test_validate_config_rejects_unknown_literature_source(tmp_path: Path):
+    data = _valid_config_data()
+    data["literature_search"] = {"sources": ["pubmedd"]}
+
+    result = validate_config(data, project_root=tmp_path, check_paths=False)
+
+    assert result.ok is False
+    assert any("pubmedd" in error for error in result.errors)
+    assert any("europepmc" in error for error in result.errors)
+
+
+def test_validate_config_accepts_literature_source_aliases(tmp_path: Path):
+    data = _valid_config_data()
+    data["literature_search"] = {
+        "sources": ["s2", "semanticscholar", "europe_pmc", "pm", "ncbi", "oa", "auto"]
+    }
+
+    result = validate_config(data, project_root=tmp_path, check_paths=False)
+
+    assert result.ok is True
+
+
+def test_rcconfig_normalises_literature_source_aliases(tmp_path: Path):
+    data = _valid_config_data()
+    data["literature_search"] = {"sources": ["S2", "europe-pmc", "oa", "s2"]}
+
+    config = RCConfig.from_dict(data, project_root=tmp_path, check_paths=False)
+
+    assert config.literature_search.sources == (
+        "semantic_scholar",
+        "europepmc",
+        "openalex",
+    )
+
+
+def test_rcconfig_auto_literature_sources_uses_defaults(tmp_path: Path):
+    data = _valid_config_data()
+    data["literature_search"] = {"sources": ["auto"]}
+
+    config = RCConfig.from_dict(data, project_root=tmp_path, check_paths=False)
+
+    assert config.literature_search.sources == (
+        "openalex",
+        "semantic_scholar",
+        "arxiv",
+    )

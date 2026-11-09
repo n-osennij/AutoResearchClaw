@@ -178,17 +178,22 @@ Any subset of these eight works; unknown names are skipped with a warning:
 | `openreview` | ICLR/NeurIPS submissions with PDFs | none |
 | `crossref` | publisher metadata (ACM/IEEE/Springer/Elsevier) + DOI | none; reuses `openalex_email` |
 | `pubmed` | MEDLINE | `NCBI_API_KEY` optional — raises 3 → 10 req/s |
-| `europepmc` | MEDLINE + bioRxiv/medRxiv/Research Square preprints, publication types, retraction flags | none |
+| `europepmc` | MEDLINE + bioRxiv/medRxiv/Research Square preprints, preprint/publication types, retraction and expression-of-concern flags | none |
 | `core` | open-access full text | `CORE_API_KEY` **required** (free at <https://core.ac.uk/services/api>) |
+
+A record marked retracted is dropped from candidates at Stage 4 (and again from
+the screening set at Stage 5); an expression of concern is kept and marked ⚠ in
+the `review.md` shortlist.
 
 ```yaml
 literature_search:
-  sources: ["openalex", "semantic_scholar", "arxiv", "openreview", "crossref"]
+  sources: ["openalex", "semantic_scholar", "arxiv", "openreview", "crossref", "pubmed", "europepmc"]
   openalex_email: "you@example.com"     # polite-pool contact
   s2_api_key_env: "S2_API_KEY"          # keys may live in env vars (preferred)...
   core_api_key: ""                     # ...or inline (inline wins)
   # Drop the MEDLINE vendors (PubMed and Europe PMC) unless research.domains
-  # looks biomedical; both flood non-medical topics with clinical hits.
+  # looks biomedical; both flood non-medical topics with clinical hits. The
+  # gate does nothing unless one of those two is in `sources`.
   pubmed_domain_gate: true
 ```
 

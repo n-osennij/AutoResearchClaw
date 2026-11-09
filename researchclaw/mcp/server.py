@@ -77,6 +77,77 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+#: Documented default ``max_results`` (also the value for ``<= 0``/garbage).
+_DEFAULT_MAX_RESULTS = 10
+#: Upper bound for one MCP search — it fans out to up to eight backends.
+_MAX_MAX_RESULTS = 100
+
+
+def _coerce_max_results(raw: Any) -> int:
+    """``max_results`` from untrusted JSON → int in ``[1, 100]``.
+
+    ``None``, a non-numeric value or anything ``<= 0`` means the documented
+    default (10). ``0`` used to be read as "not given" and ``-5`` used to slice
+    from the end (``papers[:-5]`` returned 7 of 12 rows) while also reaching
+    the backends unclamped, so no negative value may ever get through.
+    """
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_RESULTS
+    if value <= 0:
+        return _DEFAULT_MAX_RESULTS
+    return min(value, _MAX_MAX_RESULTS)
+
+
+def _coerce_sources(raw: Any) -> list[str] | None:
+    """``sources`` from untrusted JSON → ``list[str]`` or ``None``.
+
+    A bare string is one source. Raises ``ValueError`` for anything else (a
+    dict, a list of ints, nested lists) so the handler can answer with an
+    ``{"error": ...}`` payload instead of letting a ``TypeError`` escape.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError(
+            "sources must be a list of strings or a single string"
+        )
+    names: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError(
+                "sources must be a list of strings or a single string"
+            )
+        name = item.strip()
+        if name:
+            names.append(name)
+    return names or None
+
+
+def _valid_source_names() -> list[str]:
+    """Canonical backend names, for client-facing error payloads."""
+    from researchclaw.literature.search import _SOURCES
+
+    return sorted({spec.name for spec in _SOURCES.values()})
+
+
+def _split_unknown_sources(sources: list[str] | None) -> list[str]:
+    """Return the names in ``sources`` no backend answers to.
+
+    The pipeline deliberately skips an unknown name with a log warning (a typo
+    in the config must not abort a run), but an MCP client cannot see the log —
+    so ``sources: ["pubmedd"]`` would look exactly like "no papers found".
+    """
+    if not sources:
+        return []
+    from researchclaw.literature.search import _SOURCES, normalise_source
+
+    return [name for name in sources if normalise_source(name) not in _SOURCES]
+
+
 class ResearchClawMCPServer:
     """MCP server exposing AutoResearchClaw capabilities as tools.
 
@@ -349,53 +420,104 @@ class ResearchClawMCPServer:
         query = str(args.get("query") or "").strip()
         if not query:
             return {"success": False, "error": "query is required"}
-        limit = int(args.get("max_results") or 10)
-        sources = args.get("sources") or None
+        limit = _coerce_max_results(args.get("max_results"))
+        try:
+            requested_sources = _coerce_sources(args.get("sources"))
+        except ValueError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "valid_sources": _valid_source_names(),
+            }
 
         from researchclaw.literature.search import SourceKeys, search_papers
 
+        # Hoisted out of the ``try`` so the except path still has the config
+        # defaults (sources, year_min) instead of an unbound name.
+        literature = None
+        research = None
         keys = SourceKeys()
         try:
-            literature = self._load_config().literature_search
-            keys = SourceKeys(
-                s2_api_key=literature.s2_api_key,
-                openalex_email=literature.openalex_email,
-                openalex_api_key=literature.openalex_api_key,
-                pubmed_api_key=literature.pubmed_api_key,
-                core_api_key=literature.core_api_key,
-            )
+            config = self._load_config()
+            literature = getattr(config, "literature_search", None)
+            research = getattr(config, "research", None)
+            if literature is not None:
+                keys = SourceKeys(
+                    s2_api_key=literature.s2_api_key,
+                    openalex_email=literature.openalex_email,
+                    openalex_api_key=literature.openalex_api_key,
+                    pubmed_api_key=literature.pubmed_api_key,
+                    core_api_key=literature.core_api_key,
+                )
         except (FileNotFoundError, OSError, ValueError):
             logger.debug("No config for search_literature — using keyless defaults")
 
-        kwargs: dict[str, Any] = {"limit": limit, "keys": keys}
+        sources = requested_sources
+        if sources is None:
+            configured = getattr(literature, "sources", None)
+            sources = [str(source) for source in configured] if configured else None
+
+        year_min = 0
+        raw_year_min = args.get("year_min")
+        if raw_year_min is not None:
+            try:
+                year_min = int(raw_year_min)
+            except (TypeError, ValueError):
+                year_min = 0
+        elif research is not None:
+            try:
+                year_min = int(getattr(research, "min_year", 0) or 0)
+            except (TypeError, ValueError):
+                year_min = 0
+        year_min = max(0, year_min)
+
+        kwargs: dict[str, Any] = {"limit": limit, "keys": keys, "year_min": year_min}
         if sources:
-            if isinstance(sources, str):
-                sources = [sources]
-            kwargs["sources"] = tuple(str(source) for source in sources)
+            kwargs["sources"] = tuple(sources)
         try:
             papers = await asyncio.to_thread(search_papers, query, **kwargs)
         except Exception as exc:  # noqa: BLE001 - network source failures
             return {"success": False, "error": f"Literature search failed: {exc}"}
 
-        return {
+        results = [
+            {
+                # A retraction notice must never look citable to the agent on
+                # the other end of the socket.
+                "title": f"[RETRACTED] {p.title}" if p.retracted else p.title,
+                "authors": [author.name for author in p.authors],
+                "year": p.year,
+                "venue": p.venue,
+                "doi": p.doi,
+                "arxiv_id": p.arxiv_id,
+                "url": p.url,
+                "pdf_url": p.pdf_url,
+                "source": p.source,
+                "citation_count": int(p.citation_count or 0),
+                "pmid": p.pmid,
+                "is_preprint": bool(p.is_preprint),
+                "pub_types": list(p.pub_types),
+                "retracted": bool(p.retracted),
+                "concern": bool(p.concern),
+                "abstract": (p.abstract or "")[:1500],
+            }
+            for p in papers[:limit]
+        ]
+
+        response: dict[str, Any] = {
             "success": True,
             "query": query,
-            "count": len(papers),
-            "results": [
-                {
-                    "title": paper.title,
-                    "authors": [author.name for author in paper.authors],
-                    "year": paper.year,
-                    "venue": paper.venue,
-                    "doi": paper.doi,
-                    "url": paper.url,
-                    "pdf_url": paper.pdf_url,
-                    "source": paper.source,
-                    "abstract": (paper.abstract or "")[:1500],
-                }
-                for paper in papers[:limit]
-            ],
+            "count": len(results),
+            "total_found": len(papers),
+            "limit": limit,
+            "year_min": year_min,
+            "sources": list(sources) if sources else None,
+            "results": results,
         }
+        unknown = _split_unknown_sources(sources)
+        if unknown:
+            response["unknown_sources"] = unknown
+            response["valid_sources"] = _valid_source_names()
+        return response
 
     async def _handle_review_paper(self, args: dict[str, Any]) -> dict[str, Any]:
         """Ask the configured LLM for a review of a paper file.

@@ -27,6 +27,96 @@ def _validated_run_dir(run_id: str) -> Path:
         raise HTTPException(status_code=400, detail=f"Invalid run_id: {run_id}")
     return run_dir
 
+
+# Stage 4 (LITERATURE_COLLECT) writes its artifacts here.
+_LITERATURE_STAGE_DIR = "stage-04"
+_LITERATURE_CANDIDATE_HEAD = 20
+#: The fields a client needs to triage a candidate: identity, provenance and
+#: the two integrity flags. Abstracts are dropped — they are the bulk of the
+#: file and no UI renders them from here.
+_LITERATURE_CANDIDATE_FIELDS = (
+    "id",
+    "title",
+    "year",
+    "venue",
+    "doi",
+    "url",
+    "source",
+    "is_preprint",
+    "retracted",
+    "concern",
+    "cite_key",
+)
+
+
+def _read_literature(run_dir: Path) -> dict[str, Any]:
+    """Summarise Stage 4's output for the run detail endpoint.
+
+    Never raises: a half-written run directory is the normal case while the
+    pipeline is running, so a missing or malformed artifact degrades to
+    ``None``/empty lists rather than turning the whole request into a 500.
+    """
+    stage_dir = run_dir / _LITERATURE_STAGE_DIR
+    search_meta: dict[str, Any] | None = None
+    meta_path = stage_dir / "search_meta.json"
+    if meta_path.is_file():
+        try:
+            loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = None
+        if isinstance(loaded, dict):
+            search_meta = loaded
+
+    candidates: list[dict[str, Any]] = []
+    by_source: dict[str, int] = {}
+    total = 0
+    candidates_path = stage_dir / "candidates.jsonl"
+    if candidates_path.is_file():
+        try:
+            with candidates_path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    total += 1
+                    source = str(row.get("source") or "")
+                    if source:
+                        by_source[source] = by_source.get(source, 0) + 1
+                    if len(candidates) < _LITERATURE_CANDIDATE_HEAD:
+                        candidates.append(
+                            {
+                                key: row.get(key)
+                                for key in _LITERATURE_CANDIDATE_FIELDS
+                            }
+                        )
+        except OSError:
+            pass
+
+    sources: list[str] | None = None
+    if search_meta is not None:
+        meta_sources = search_meta.get("sources")
+        if isinstance(meta_sources, list | tuple) and meta_sources:
+            sources = [str(item) for item in meta_sources]
+    if sources is None:
+        # Older runs carry no ``sources`` key in search_meta.json; the sources
+        # that actually returned something are the ones worth showing.
+        observed = sorted(by_source)
+        sources = observed or None
+
+    return {
+        "sources": sources,
+        "counts": {"total": total, "by_source": by_source},
+        "search_meta": search_meta,
+        "candidates": candidates,
+    }
+
+
 router = APIRouter(prefix="/api", tags=["pipeline"])
 
 
@@ -34,7 +124,6 @@ class PipelineStartRequest(BaseModel):
     """Request body for starting a pipeline run."""
 
     topic: str | None = None
-    config_overrides: dict[str, Any] | None = None
     auto_approve: bool = True
 
 
@@ -221,6 +310,8 @@ async def get_run(run_id: str) -> dict[str, Any]:
         found = list(run_dir.rglob(pattern))
         if found:
             info[f"has_{pattern.split('.')[1]}"] = True
+
+    info["literature"] = _read_literature(run_dir)
 
     return info
 

@@ -117,6 +117,33 @@ def _format_age(seconds: float) -> str:
     return f"{seconds / 86400:.1f}d"
 
 
+def _write_atomic(path: Path, body: str) -> None:
+    """Write *body* to *path* through a unique temp file + ``os.replace``.
+
+    A concurrent reader must never see a half-written file. ``os.replace`` is
+    retried on Windows: CPython's ``read_text`` keeps no ``FILE_SHARE_DELETE``
+    handle, so a reader touching the target at the same instant makes
+    ``MoveFileExW`` raise ``PermissionError`` (WinError 5/32).
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        for attempt in range(3):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def put_cache(
     query: str,
     source: str,
@@ -145,25 +172,13 @@ def put_cache(
     # Unique temp name per writer: a fixed ``.tmp`` lets two concurrent searches
     # (the pipeline runs in a thread, ``verify`` and ``trends`` run in others)
     # rename one writer's half-finished file into place over the other's.
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         # ``json.dumps`` sits inside the guard: an unserialisable field is a
         # cache miss, not a crash in the literature stage.
-        body = json.dumps(payload, indent=2)
-        tmp.write_text(body, encoding="utf-8")
-        os.replace(tmp, path)
+        _write_atomic(path, json.dumps(payload, indent=2))
         logger.debug("Cached %d papers for key %s", len(papers), key)
     except (OSError, TypeError, ValueError):
         logger.warning("Could not write literature cache entry %s", path, exc_info=True)
-    finally:
-        # Nothing to do when ``os.replace`` consumed the temp file; this only
-        # cleans up after a failure (and never touches another writer's file,
-        # since the name carries pid + uuid4).
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +254,8 @@ def note_search_policy(
     )
     d = _cache_dir(cache_base)
     policy_path = d / _POLICY_FILE
-    policy_path.write_text(
+    _write_atomic(
+        policy_path,
         json.dumps(
             {
                 "min_year": int(min_year),
@@ -248,7 +264,6 @@ def note_search_policy(
             },
             indent=2,
         ),
-        encoding="utf-8",
     )
     snapshot["previous"] = snapshot.get("policy")
     return snapshot
@@ -258,7 +273,7 @@ def clear_cache(*, cache_base: Path | None = None) -> int:
     """Remove all cache files. Return count of files deleted."""
     d = _cache_dir(cache_base)
     count = 0
-    for f in d.glob("*.json"):
+    for f in d.glob("*.json*"):
         if f.name == _POLICY_FILE:
             # Keep the policy record: the next fill can still tell which
             # package filled the now-empty directory.

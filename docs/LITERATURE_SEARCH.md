@@ -32,7 +32,14 @@ names are skipped). Keys go inline (`*_api_key`) or into the env var named by
 1. **Queries.** Stage 3 writes up to 8 queries to `stage-03/queries.json`; Stage 4 adds up to 5 broader variants.
 2. **Primary pass.** For each query × source: up to `literature_search.max_results_per_query` (40) papers, published in `research.min_year` or later.
 3. **Hybrid pass** (on by default). The same base queries run again with no year floor, 10 results per source (`research.foundational_results_per_query`). Only papers older than the floor are kept, deduplicated against the primary pass, sorted by citations and capped at `research.foundational_max_papers` (40).
-4. **Merge.** Everything is deduplicated by DOI → arXiv ID → title and written to `stage-04/candidates.jsonl` (+ `references.bib`), each row tagged `year_band`: `recent`, `foundational`, or `all` when there is no floor.
+4. **Merge.** Everything is deduplicated by DOI (prefix-normalised, so `doi:` and
+   `https://doi.org/` forms match) → arXiv ID → title, a journal record beating a
+   preprint one; the surviving record absorbs the dropped duplicate's `retracted`/
+   `concern` flags, `pmid`, publication types, MeSH terms and any `pdf_url` it lacked,
+   and both records' identifiers keep pointing at it. Written to
+   `stage-04/candidates.jsonl` (+ `references.bib`, cite keys de-duplicated with
+   `a`/`b`/`c` suffixes), each row tagged `year_band`: `recent`, `foundational`, or
+   `all` when there is no floor.
 5. **Screen** (gate). Stage 5 keeps rows that share ≥1 topic keyword, sorts by overlap, truncates abstracts and caps the prompt at `max_screen_chars`; the LLM returns a shortlist (target `min_shortlist`, backfilled if shorter). Foundations are kept only when they define the problem, a metric or a baseline.
 6. **Extract.** Stage 6 turns the shortlist into knowledge cards; synthesis and hypotheses see only those cards.
 
@@ -77,7 +84,7 @@ per paper but cost slots (600k holds ~448 papers at 800 chars vs ~345 at
 ### Literature cache
 
 Search results are cached in `.researchclaw_cache/literature/` with per-source
-TTLs (24 h arXiv, 3 days OpenAlex/S2, 7 days the rest). The cache key includes
+TTLs (24 h arXiv, 3 days OpenAlex/S2/PubMed/Europe PMC, 7 days the rest). The cache key includes
 `min_year`, so results fetched under one year policy are never served under
 another, and the directory records the policy that filled it (`.policy.json`).
 Stage 4 warns when the policy changed or when entries predate this tracking, and
@@ -88,9 +95,12 @@ Stage 4 warns when the policy changed or when entries predate this tracking, and
 **Biomedical sources and open-access PDFs.** `pubmed_domain_gate: true` drops
 PubMed *and* Europe PMC unless `research.domains` looks biomedical — both are
 MEDLINE vendors whose word-level query translation floods an ML topic with
-irrelevant clinical hits. Europe PMC is the only backend that reports preprints
-(`SRC:PPR`), preprints, publication types and retraction flags; a record marked retracted is dropped from candidates at Stage 4 (and from the
-screening set again at Stage 5, which guards resumed runs), with the drop logged. When a paper exists both as a preprint and
+irrelevant clinical hits. Preprint status comes from OpenAlex, Crossref and Europe
+PMC, and a retraction flag from OpenAlex, Crossref, PubMed and Europe PMC; a record
+marked retracted is dropped from candidates at Stage 4 (and from the screening set
+again at Stage 5, which guards resumed runs), with the drop logged. An expression of
+concern is *not* dropped — it is kept and marked ⚠ in the `review.md` shortlist.
+When a paper exists both as a preprint and
 in a journal, deduplication keeps the journal version regardless of citation
 counts. Open-access `pdf_url` links captured by
 any source are passed to the PDF extractor when
@@ -111,7 +121,8 @@ researchclaw review --run-dir artifacts/rc-...   # render an existing run
 ```
 
 `review.md` sections: scope, search strategy (queries, sources, year policy),
-screening funnel, shortlist table (title/year/venue/citations/relevance),
+screening funnel, shortlist table (#/title/year/venue/type/citations/relevance/source,
+with ⚠️ retracted and expression-of-concern marks on the title),
 evidence cards, synthesis and gaps, numbered references. Gates are
 auto-approved; if a stage fails the command still renders whatever exists and
 prints the unfinished stages to stderr. Via the MCP server the same range is

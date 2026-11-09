@@ -4,6 +4,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import sys
@@ -138,6 +139,13 @@ def check_config_valid(config_path: str | Path) -> CheckResult:
     typed_data = {str(key): value for key, value in data_map.items()}
     result = validate_config(typed_data)
     if result.ok:
+        if result.warnings:
+            return CheckResult(
+                name="config_valid",
+                status="warn",
+                detail="; ".join(result.warnings),
+                fix="Review the warnings; the config still loads",
+            )
         return CheckResult(
             name="config_valid", status="pass", detail="Config validation ok"
         )
@@ -795,6 +803,105 @@ def check_literature_cache(min_year: int, hybrid: bool) -> CheckResult:
     )
 
 
+# ``research.domains`` hints that mean "this run needs MEDLINE". These are the
+# same words the pipeline uses (``_BIOMED_DOMAIN_HINTS`` in
+# ``researchclaw/pipeline/stage_impls/_literature.py``); they are copied rather
+# than imported because a config question must not drag the stage package in.
+# Short hints match as whole words only: as substrings "med" fires on
+# "multimedia" and "bio" on "biometrics".
+_BIOMED_DOMAIN_SHORT_RE = re.compile(r"(?<![a-z])(?:bio|med|nurs)(?![a-z])")
+_BIOMED_DOMAIN_HINTS = (
+    "biolog",
+    "biomed",
+    "biochem",
+    "medic",
+    "pharma",
+    "clin",
+    "neuro",
+    "epidem",
+    "health",
+    "genom",
+    "oncolog",
+    "immun",
+    "pharm",
+    "drug",
+    "physiolog",
+    "cardio",
+    "patholog",
+    "microbio",
+    "infect",
+    "vaccin",
+    "metabol",
+    "nutrition",
+    "dental",
+    "surg",
+)
+_BIOMED_SOURCE_NAMES = frozenset({"pubmed", "europepmc", "europe_pmc"})
+
+
+def _is_biomedical_domain(domain: str) -> bool:
+    text = (domain or "").strip().lower()
+    if not text:
+        return False
+    if _BIOMED_DOMAIN_SHORT_RE.search(text):
+        return True
+    return any(hint in text for hint in _BIOMED_DOMAIN_HINTS)
+
+
+def _canonical_source_name(name: str) -> str:
+    return str(name).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def check_literature_sources(
+    sources: tuple[str, ...] | list[str] = (),
+    domains: tuple[str, ...] | list[str] = (),
+) -> CheckResult:
+    """Warn when a biomedical topic is configured without a biomedical index.
+
+    ``research.domains: ["oncology"]`` with only ``openalex``/``arxiv`` is
+    valid config and passes every other check, yet PubMed and Europe PMC are
+    the only backends indexing MEDLINE: the run would search the topic with
+    general-purpose indexes and quietly miss the clinical literature.
+    """
+    biomedical_domains = [
+        str(domain) for domain in (domains or ()) if _is_biomedical_domain(str(domain))
+    ]
+    configured = {
+        _canonical_source_name(source)
+        for source in (sources or ())
+        if str(source).strip()
+    }
+    covered = sorted(configured & _BIOMED_SOURCE_NAMES)
+    if not biomedical_domains:
+        return CheckResult(
+            name="literature_sources",
+            status="pass",
+            detail="No biomedical domain hint — PubMed/Europe PMC not required",
+        )
+    if covered:
+        return CheckResult(
+            name="literature_sources",
+            status="pass",
+            detail=(
+                "Biomedical domain covered by "
+                f"{', '.join(covered)}"
+            ),
+        )
+    return CheckResult(
+        name="literature_sources",
+        status="warn",
+        detail=(
+            "research.domains looks biomedical "
+            f"({', '.join(biomedical_domains)}) but literature_search.sources "
+            f"has no pubmed/europepmc ({', '.join(sorted(configured)) or 'empty'})"
+        ),
+        fix=(
+            "Add 'europepmc' (no key required) or 'pubmed' to "
+            "literature_search.sources"
+        ),
+    )
+
+
 def check_acpx() -> CheckResult:
     """Check that the ACP launcher (``acpx``) is installed.
 
@@ -863,6 +970,8 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
     extra_headers: dict[str, str] = {}
     min_year = 2020
     hybrid_search = True
+    literature_sources: tuple[str, ...] = ()
+    research_domains: tuple[str, ...] = ()
 
     try:
         config = RCConfig.load(path, check_paths=False)
@@ -876,6 +985,8 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
         acp_agent_command = config.llm.acp.agent
         min_year = config.research.min_year
         hybrid_search = config.research.hybrid_search
+        literature_sources = tuple(config.literature_search.sources)
+        research_domains = tuple(config.research.domains)
         # Gateway routing headers. Some gateways need a per-conversation
         # session id and reject a placeholder, so resolve "auto" exactly the
         # way LLMClient does.
@@ -898,6 +1009,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
         )
     checks.append(check_min_year(min_year, hybrid_search))
     checks.append(check_literature_cache(min_year, hybrid_search))
+    checks.append(check_literature_sources(literature_sources, research_domains))
     checks.append(check_sandbox_python(sandbox_python_path))
     checks.append(check_matplotlib())
     checks.append(check_experiment_mode(experiment_mode))

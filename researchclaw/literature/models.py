@@ -21,6 +21,21 @@ _DOI_PREFIX_RE = re.compile(
 _HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+#: Canonical literature-backend names. Mirrors the ``_SOURCES`` table in
+#: ``researchclaw/literature/search.py``; kept in this leaf module (no HTTP
+#: clients, no config import) so ``researchclaw.config.validate_config`` can
+#: reject a typo instead of letting Stage 4 skip the backend with a warning.
+LITERATURE_SOURCES: tuple[str, ...] = (
+    "openalex",
+    "semantic_scholar",
+    "arxiv",
+    "openreview",
+    "crossref",
+    "pubmed",
+    "europepmc",
+    "core",
+)
+
 
 def _plain(text: str) -> str:
     """Strip provider markup from a metadata string.
@@ -280,7 +295,6 @@ class Paper:
             lines.append(f"  url = {{{_bibtex_escape_url(self.url)}}},")
         lines.append("}")
         return "\n".join(lines)
-        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Serialisation helpers (for JSONL output)
@@ -311,6 +325,66 @@ class Paper:
             "retracted": self.retracted,
             "concern": self.concern,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "Paper":
+        """Rebuild a :class:`Paper` from :meth:`to_dict` output.
+
+        Single source of truth for the cache round-trip: the hand-rolled
+        deserialiser this replaces had to be edited for every new field, and
+        forgetting one (``concern``) silently dropped it for months.
+        """
+
+        def _text(value: object) -> str:
+            return "" if value is None else str(value)
+
+        def _strs(value: object) -> tuple[str, ...]:
+            if isinstance(value, (list, tuple)):
+                return tuple(str(v) for v in value if v)
+            return ()
+
+        def _int(value: object) -> int:
+            if isinstance(value, bool) or value is None:
+                return 0
+            try:
+                return int(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError, OverflowError):
+                # ``inf``/``nan`` arrive as JSON numbers and cannot be ints.
+                return 0
+
+        raw_authors = data.get("authors") or ()
+        authors: tuple[Author, ...] = ()
+        if isinstance(raw_authors, (list, tuple)):
+            authors = tuple(
+                Author(
+                    name=_text(entry.get("name")),
+                    affiliation=_text(entry.get("affiliation")),
+                )
+                for entry in raw_authors
+                if isinstance(entry, dict)
+            )
+
+        return cls(
+            paper_id=_text(data.get("paper_id")),
+            title=_text(data.get("title")),
+            authors=authors,
+            year=_int(data.get("year")),
+            abstract=_text(data.get("abstract")),
+            venue=_text(data.get("venue")),
+            citation_count=_int(data.get("citation_count")),
+            doi=_text(data.get("doi")),
+            arxiv_id=_text(data.get("arxiv_id")),
+            url=_text(data.get("url")),
+            pdf_url=_text(data.get("pdf_url")),
+            source=_text(data.get("source")),
+            pmid=_text(data.get("pmid")),
+            is_preprint=bool(data.get("is_preprint", False)),
+            pub_types=_strs(data.get("pub_types")),
+            mesh_terms=_strs(data.get("mesh_terms")),
+            retracted=bool(data.get("retracted", False)),
+            concern=bool(data.get("concern", False)),
+            _bibtex_override=_text(data.get("_bibtex_override")),
+        )
 
 
 _CONFERENCE_RE = re.compile(

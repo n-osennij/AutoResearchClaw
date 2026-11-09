@@ -8,6 +8,7 @@ import math
 import re
 from collections import Counter
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 import yaml  # noqa: F401 — available for downstream use
@@ -1300,6 +1301,8 @@ def _seminal_to_bibtex(paper: dict, cite_key: str) -> str:
 def _resolve_missing_citations(
     missing_keys: set[str],
     existing_bib: str,
+    *,
+    sources: Sequence[str] | None = None,
 ) -> tuple[set[str], list[str]]:
     """Try to find BibTeX entries for citation keys not in references.bib.
 
@@ -1401,7 +1404,10 @@ def _resolve_missing_citations(
         query = " ".join(query_parts)
 
         try:
-            results = search_papers(query, limit=5, deduplicate=True)
+            # Honour the configured backends: a biomedical run that screens
+            # Europe PMC must not resolve its citations against OpenAlex only.
+            extra = {"sources": list(sources)} if sources else {}
+            results = search_papers(query, limit=5, deduplicate=True, **extra)
         except Exception as exc:
             logger.debug("BUG-176: Search failed for %r: %s", key, exc)
             continue
@@ -1985,7 +1991,9 @@ def _execute_export_publish(
                 new_bib_entries: list[str] = []
                 if len(invalid_keys) <= 30:  # Sanity: don't flood APIs
                     resolved_keys, new_bib_entries = _resolve_missing_citations(
-                        invalid_keys, bib_text
+                        invalid_keys,
+                        bib_text,
+                        sources=config.literature_search.sources or None,
                     )
                     if resolved_keys:
                         valid_keys.update(resolved_keys)

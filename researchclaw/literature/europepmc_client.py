@@ -13,9 +13,7 @@ No API key, no documented quota for the ``rest/search`` endpoint.
 
 Public API
 ----------
-- ``search_europepmc(query, limit, year_min, preprints_only)`` → ``list[Paper]``
-- ``EPMC_PREPRINT_FILTER`` — ``"SRC:PPR"``, the field to AND into a query when
-  only preprints are wanted.
+- ``search_europepmc(query, limit, year_min)`` → ``list[Paper]``
 """
 
 from __future__ import annotations
@@ -41,7 +39,6 @@ _MAX_PAGE = 1000
 # year the record was created.
 _YEAR_FIELD = "FIRST_PDATE"
 
-EPMC_PREPRINT_FILTER = "SRC:PPR"
 # Same vocabulary as PubMed: a partially retracted paper is still retracted.
 _RETRACTION_TYPES = frozenset({"Retraction in", "Partial Retraction in"})
 
@@ -186,7 +183,6 @@ def search_europepmc(
     *,
     limit: int = 50,
     year_min: int = 0,
-    preprints_only: bool = False,
 ) -> list[Paper]:
     """Search Europe PMC and return parsed records.
 
@@ -199,9 +195,6 @@ def search_europepmc(
         Maximum records (capped at 1000 by the API).
     year_min:
         If > 0, only records first published in this year or later.
-    preprints_only:
-        AND ``SRC:PPR`` into the query — bioRxiv / medRxiv / Research Square
-        records only.
 
     Returns
     -------
@@ -209,8 +202,6 @@ def search_europepmc(
         Parsed records. Empty list on failure, like every other backend.
     """
     limit = max(1, min(limit, _MAX_PAGE))
-    if preprints_only:
-        query = f"({query}) AND {EPMC_PREPRINT_FILTER}"
     params = {
         "query": _build_query(query, year_min),
         "format": "json",

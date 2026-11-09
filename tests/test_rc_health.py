@@ -470,7 +470,8 @@ def test_run_doctor_all_pass_openai(tmp_path: Path) -> None:
     ):
         report = health.run_doctor(config_path)
     assert report.overall == "pass"
-    assert len(report.checks) == 11
+    assert len(report.checks) == 12
+    assert "literature_sources" in [check.name for check in report.checks]
 
 
 def test_run_doctor_with_failures(tmp_path: Path) -> None:
@@ -821,7 +822,7 @@ def test_run_doctor_acp_includes_agent_check(tmp_path: Path) -> None:
     check_names = [c.name for c in report.checks]
     assert "acp_agent" in check_names
     assert report.overall == "pass"
-    assert len(report.checks) == 10
+    assert len(report.checks) == 11
 
 
 def test_print_doctor_report_ascii_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -873,3 +874,47 @@ def test_check_llm_connectivity_probes_with_get_not_head() -> None:
     assert result.status == "pass"
     assert captured, "expected a probe request"
     assert captured[0].get_method() == "GET"
+
+
+def test_check_config_valid_warns_when_validation_has_warnings(
+    tmp_path: Path,
+) -> None:
+    from researchclaw.config import ValidationResult
+
+    config_path = tmp_path / "config.yaml"
+    _write_valid_config(config_path)
+    with patch.object(
+        health,
+        "validate_config",
+        return_value=ValidationResult(
+            ok=True, warnings=("Missing recommended kb subdir: kb/papers",)
+        ),
+    ):
+        result = health.check_config_valid(config_path)
+
+    assert result.status == "warn"
+    assert "Missing recommended kb subdir: kb/papers" in result.detail
+
+
+def test_check_literature_sources_warns_for_biomedical_without_index() -> None:
+    result = health.check_literature_sources(
+        ("openalex", "semantic_scholar", "arxiv"), ("oncology",)
+    )
+
+    assert result.status == "warn"
+    assert "oncology" in result.detail
+    assert "europepmc" in result.fix
+
+
+def test_check_literature_sources_passes_with_biomedical_index() -> None:
+    result = health.check_literature_sources(("openalex", "pubmed"), ("oncology",))
+
+    assert result.status == "pass"
+
+
+def test_check_literature_sources_passes_for_non_biomedical_domain() -> None:
+    result = health.check_literature_sources(
+        ("openalex", "semantic_scholar", "arxiv"), ("computer vision", "multimedia")
+    )
+
+    assert result.status == "pass"

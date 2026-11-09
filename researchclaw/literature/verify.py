@@ -32,6 +32,7 @@ from enum import Enum
 from typing import Sequence
 
 from researchclaw.literature.models import Author, Paper, normalise_doi
+from researchclaw.literature._http import _read_limited
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,7 @@ def verify_by_arxiv_id(arxiv_id: str, expected_title: str) -> CitationResult | N
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "ResearchClaw/0.1"})
         with urllib.request.urlopen(req, timeout=_ARXIV_TIMEOUT) as resp:
-            data = resp.read().decode("utf-8")
+            data = _read_limited(resp, "arXiv").decode("utf-8")
     except Exception as exc:
         logger.debug("arXiv ID verification failed for %s: %s", arxiv_id, exc)
         return None
@@ -311,7 +312,7 @@ def _verify_doi_datacite(doi: str, expected_title: str) -> CitationResult | None
             },
         )
         with urllib.request.urlopen(req, timeout=_DATACITE_TIMEOUT) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+            body = json.loads(_read_limited(resp, "DataCite"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return CitationResult(
@@ -392,7 +393,7 @@ def verify_by_doi(doi: str, expected_title: str) -> CitationResult | None:
             },
         )
         with urllib.request.urlopen(req, timeout=_CROSSREF_TIMEOUT) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+            body = json.loads(_read_limited(resp, "CrossRef"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             # CrossRef 404 — try DataCite for arXiv/DataCite DOIs
@@ -492,7 +493,7 @@ def verify_by_openalex(title: str) -> CitationResult | None:
             },
         )
         with urllib.request.urlopen(req, timeout=_OPENALEX_TIMEOUT) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+            body = json.loads(_read_limited(resp, "OpenAlex"))
     except Exception as exc:
         logger.debug("OpenAlex search failed for %r: %s", title, exc)
         return None
@@ -611,7 +612,12 @@ def verify_by_title_search(
     Uses the unified ``search_papers`` function from our literature module.
     Returns *None* only on total network failure.
     """
-    from researchclaw.literature.search import SourceKeys, search_papers
+    from researchclaw.literature.search import (
+        _DEFAULT_SOURCES,
+        _SOURCES,
+        SourceKeys,
+        search_papers,
+    )
 
     try:
         results = search_papers(
@@ -631,7 +637,8 @@ def verify_by_title_search(
             status=VerifyStatus.HALLUCINATED,
             confidence=0.7,
             method="title_search",
-            details="No results found via Semantic Scholar + arXiv",
+            details="No results found via "
+            + " + ".join(_SOURCES[name].label for name in _DEFAULT_SOURCES),
         )
 
     # Find best title match

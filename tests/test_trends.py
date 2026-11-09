@@ -19,7 +19,6 @@ from researchclaw.trends.trend_analyzer import TrendAnalyzer, _STOPWORDS
 from researchclaw.trends.opportunity_finder import OpportunityFinder
 from researchclaw.trends.daily_digest import DailyDigest
 from researchclaw.trends.auto_topic import AutoTopicGenerator
-from researchclaw.literature.trends import LiteratureTrendAnalyzer
 
 
 # ---------------------------------------------------------------------------
@@ -443,33 +442,3 @@ class TestAutoTopicGenerator:
         output = gen.format_candidates(candidates)
         assert "Test topic" in output
         assert "0.75" in output
-
-
-# ===================================================================
-# LiteratureTrendAnalyzer tests
-# ===================================================================
-
-
-class TestLiteratureTrendAnalyzer:
-    def test_no_client_returns_empty(self):
-        lta = LiteratureTrendAnalyzer()
-        assert lta.get_daily_papers(["ml"]) == []
-
-    def test_analyze_keyword_trends_no_client(self):
-        lta = LiteratureTrendAnalyzer()
-        result = lta.analyze_keyword_trends(["ml"])
-        assert result["total_papers"] == 0
-
-    def test_find_emerging_topics_no_client(self):
-        lta = LiteratureTrendAnalyzer()
-        assert lta.find_emerging_topics(["ml"]) == []
-
-    def test_find_emerging_topics_filters_bigrams(self):
-        """Only bigrams with count >= 3 are considered emerging."""
-        lta = LiteratureTrendAnalyzer(search_client="fake")
-        papers = _make_papers(20)
-        with patch.object(lta, "get_daily_papers", return_value=papers):
-            topics = lta.find_emerging_topics(["ml"])
-        for t in topics:
-            assert t["type"] == "bigram"
-            assert t["frequency"] >= 3

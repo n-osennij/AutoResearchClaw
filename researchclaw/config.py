@@ -124,6 +124,38 @@ def _is_blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+#: Spellings of ``literature_search.sources`` that resolve to a canonical
+#: backend. ``normalise_source`` in ``researchclaw/literature/search.py`` does
+#: the lowercasing/underscoring; these are the shorthands people type on top.
+LITERATURE_SOURCE_ALIASES: dict[str, str] = {
+    "europe_pmc": "europepmc",
+    "s2": "semantic_scholar",
+    "semanticscholar": "semantic_scholar",
+    "pm": "pubmed",
+    "ncbi": "pubmed",
+    "oa": "openalex",
+}
+
+
+def _literature_source_names() -> tuple[str, ...]:
+    """Canonical backend names, imported lazily.
+
+    ``researchclaw.literature.models`` is a leaf module, but importing it walks
+    the package ``__init__``, which pulls every HTTP client. Config validation
+    should not pay for that on ``researchclaw config``/``wizard`` startup, so
+    the import happens on first use only.
+    """
+    from researchclaw.literature.models import LITERATURE_SOURCES
+
+    return LITERATURE_SOURCES
+
+
+def _normalise_literature_source(name: str) -> str:
+    """``S2`` / ``europe-pmc`` / ``Europe PMC`` → canonical backend name."""
+    key = str(name).strip().lower().replace("-", "_").replace(" ", "_")
+    return LITERATURE_SOURCE_ALIASES.get(key, key)
+
+
 @dataclass(frozen=True)
 class ValidationResult:
     ok: bool
@@ -1214,6 +1246,31 @@ def validate_config(
     if hybrid_search is not None and not isinstance(hybrid_search, bool):
         errors.append("research.hybrid_search must be true or false")
 
+    literature_sources = _get_by_path(data, "literature_search.sources")
+    if literature_sources is not None and not _is_blank(literature_sources):
+        if isinstance(literature_sources, str):
+            raw_sources: list[Any] = literature_sources.split(",")
+        elif isinstance(literature_sources, list | tuple):
+            raw_sources = list(literature_sources)
+        else:
+            raw_sources = []
+            errors.append(
+                "literature_search.sources must be a list of source names "
+                f"(valid: {', '.join(_literature_source_names())})"
+            )
+        valid_sources = _literature_source_names()
+        for raw_source in raw_sources:
+            if _is_blank(raw_source):
+                continue
+            canonical = _normalise_literature_source(str(raw_source))
+            # ``auto`` keeps the built-in defaults.
+            if canonical in ("auto", "") or canonical in valid_sources:
+                continue
+            errors.append(
+                f"Invalid literature_search.sources entry: {raw_source} "
+                f"(valid: {', '.join(valid_sources)})"
+            )
+
     for field in ("foundational_results_per_query", "foundational_max_papers"):
         raw = _get_by_path(data, f"research.{field}")
         if raw is None or _is_blank(raw):
@@ -1306,6 +1363,17 @@ def _parse_literature_search_config(data: dict[str, Any]) -> LiteratureSearchCon
         sources = tuple(str(source) for source in (sources_raw or ()))
     if not sources:
         sources = LiteratureSearchConfig.sources
+
+    # Aliases and ``auto`` are resolved here, not in the search layer: a source
+    # name that survives ``validate_config`` must also resolve at Stage 4, or
+    # the run silently searches nothing.
+    canonical_sources: list[str] = []
+    for source in sources:
+        canonical = _normalise_literature_source(source)
+        if not canonical or canonical == "auto" or canonical in canonical_sources:
+            continue
+        canonical_sources.append(canonical)
+    sources = tuple(canonical_sources) or LiteratureSearchConfig.sources
 
     return LiteratureSearchConfig(
         sources=sources,

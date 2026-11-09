@@ -115,7 +115,8 @@ researchclaw review --run-dir artifacts/rc-...
 ```
 
 The review contains: scope, the exact queries and sources, the year policy,
-the screening funnel, a shortlist table (title/year/venue/citations/relevance),
+the screening funnel, a shortlist table (#/title/year/venue/type/citations/relevance/source,
+with ⚠️ retracted and expression-of-concern marks on the title),
 one section per evidence card, the synthesis with research gaps, and a
 numbered reference list. Gates are auto-approved; everything else (sources,
 keys, year floor, hybrid pass, screening budget) comes from the config. See
@@ -385,7 +386,7 @@ Phase D: Experiment Design         Phase H: Finalization
 
 | Feature | Description |
 |---------|------------|
-| **📚 Multi-Source Literature** | Real papers from eight backends — OpenAlex, Semantic Scholar and arXiv by default, plus opt-in OpenReview, Crossref, PubMed, Europe PMC and CORE (PubMed adds MeSH terms and publication types; both add preprint flags and retraction/expression-of-concern markers). Query expansion, cross-source deduplication, retry with `Retry-After`, circuit breaker with graceful degradation, open-access `pdf_url` capture feeding full-text extraction |
+| **📚 Multi-Source Literature** | Real papers from eight backends — OpenAlex, Semantic Scholar and arXiv by default, plus opt-in OpenReview, Crossref, PubMed, Europe PMC and CORE (PubMed adds MeSH terms and publication types; Europe PMC adds publication types, preprint, retraction and expression-of-concern flags; OpenAlex and Crossref also mark preprints and retractions). Query expansion, cross-source deduplication, retry with `Retry-After`, circuit breaker with graceful degradation, open-access `pdf_url` capture feeding full-text extraction |
 | **🔍 4-Layer Citation Verification** | arXiv ID check → CrossRef/DataCite DOI → Semantic Scholar title match → LLM relevance scoring. Hallucinated refs auto-removed. |
 | **🖥️ Hardware-Aware Execution** | Auto-detects GPU (NVIDIA CUDA / Apple MPS / CPU-only) and adapts code generation, imports, and experiment scale accordingly |
 | **🦾 OpenCode Beast Mode** | Complex experiments auto-routed to [OpenCode](https://github.com/anomalyco/opencode) — generates multi-file projects with custom architectures, training loops, and ablation studies. Install via `researchclaw setup`. |
@@ -674,7 +675,7 @@ llm:
 
 # === Literature search ===
 literature_search:
-  sources: ["openalex", "semantic_scholar", "arxiv"]  # Subset of the 7 backends below, in call order
+  sources: ["openalex", "semantic_scholar", "arxiv"]  # Any subset of the 8 backends (openalex, semantic_scholar, arxiv, openreview, crossref, pubmed, europepmc, core), in call order
   max_results_per_query: 40          # Results per query before deduplication
   inter_query_delay_sec: 1.5         # Delay between expanded queries (per-source pacing is built in)
   max_screen_chars: 600000           # Stage-5 candidate blob cap (chars) — 1M-token preset

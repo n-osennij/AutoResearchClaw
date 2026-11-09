@@ -28,6 +28,7 @@ import urllib.request
 from typing import Any
 
 from researchclaw.literature.models import Author, Paper
+from researchclaw.literature._http import _read_limited
 
 logger = logging.getLogger(__name__)
 
@@ -60,24 +61,27 @@ _cb_consecutive_429s: int = 0
 _cb_cooldown_sec: float = _CB_INITIAL_COOLDOWN
 _cb_open_since: float = 0.0  # monotonic timestamp when breaker opened
 _cb_trip_count: int = 0      # total number of trips in this process
+# One probe at a time in HALF_OPEN — see the same flag in arxiv_client.py.
+_cb_probe_in_flight: bool = False
 _cb_lock = threading.Lock()
 
 
 def _reset_circuit_breaker() -> None:
     """Reset circuit breaker state (for tests)."""
     global _cb_state, _cb_consecutive_429s, _cb_cooldown_sec  # noqa: PLW0603
-    global _cb_open_since, _cb_trip_count  # noqa: PLW0603
+    global _cb_open_since, _cb_trip_count, _cb_probe_in_flight  # noqa: PLW0603
     with _cb_lock:
         _cb_state = _CB_CLOSED
         _cb_consecutive_429s = 0
         _cb_cooldown_sec = _CB_INITIAL_COOLDOWN
         _cb_open_since = 0.0
         _cb_trip_count = 0
+        _cb_probe_in_flight = False
 
 
 def _cb_should_allow() -> bool:
     """Check if circuit breaker allows a request."""
-    global _cb_state  # noqa: PLW0603
+    global _cb_state, _cb_probe_in_flight  # noqa: PLW0603
     with _cb_lock:
         if _cb_state == _CB_CLOSED:
             return True
@@ -85,6 +89,7 @@ def _cb_should_allow() -> bool:
             elapsed = time.monotonic() - _cb_open_since
             if elapsed >= _cb_cooldown_sec:
                 _cb_state = _CB_HALF_OPEN
+                _cb_probe_in_flight = True
                 logger.info(
                     "S2 circuit breaker → HALF_OPEN after %.0fs cooldown. "
                     "Trying one probe request...",
@@ -92,15 +97,20 @@ def _cb_should_allow() -> bool:
                 )
                 return True
             return False
-        # HALF_OPEN: allow the probe
+        # HALF_OPEN: allow exactly one probe; the rest wait.
+        if _cb_probe_in_flight:
+            return False
+        _cb_probe_in_flight = True
         return True
 
 
 def _cb_on_success() -> None:
     """Record a successful request."""
     global _cb_state, _cb_consecutive_429s, _cb_cooldown_sec  # noqa: PLW0603
+    global _cb_probe_in_flight  # noqa: PLW0603
     with _cb_lock:
         _cb_consecutive_429s = 0
+        _cb_probe_in_flight = False
         if _cb_state != _CB_CLOSED:
             logger.info("S2 circuit breaker → CLOSED (request succeeded)")
             _cb_state = _CB_CLOSED
@@ -110,9 +120,10 @@ def _cb_on_success() -> None:
 def _cb_on_429() -> bool:
     """Record a 429 response. Returns True if breaker is now OPEN."""
     global _cb_state, _cb_consecutive_429s, _cb_cooldown_sec  # noqa: PLW0603
-    global _cb_open_since, _cb_trip_count  # noqa: PLW0603
+    global _cb_open_since, _cb_trip_count, _cb_probe_in_flight  # noqa: PLW0603
     with _cb_lock:
         _cb_consecutive_429s += 1
+        _cb_probe_in_flight = False
 
         if _cb_state == _CB_HALF_OPEN:
             # Probe failed — back to OPEN with doubled cooldown
@@ -233,7 +244,7 @@ def _request_with_retry(
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
-                body = resp.read().decode("utf-8")
+                body = _read_limited(resp, "Semantic Scholar").decode("utf-8")
                 _cb_on_success()
                 return json.loads(body)
         except urllib.error.HTTPError as exc:
@@ -356,7 +367,7 @@ def _post_with_retry(
         try:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                data = json.loads(_read_limited(resp, "Semantic Scholar"))
                 _cb_on_success()
                 return data if isinstance(data, list) else None
         except urllib.error.HTTPError as exc:

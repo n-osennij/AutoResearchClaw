@@ -13,6 +13,8 @@ import yaml
 
 from researchclaw.adapters import AdapterBundle
 from researchclaw.config import RCConfig
+from researchclaw.literature.models import normalise_doi
+from researchclaw.literature.search import normalise_title
 from researchclaw.llm.client import LLMClient
 from researchclaw.pipeline._helpers import (
     StageResult,
@@ -88,7 +90,9 @@ def _paper_identity_keys(paper: Any) -> set[str]:
     per paper lets those copies through; comparing all three does not.
     """
     keys: set[str] = set()
-    doi = str(getattr(paper, "doi", "") or "").strip().lower()
+    # Shared normaliser: ``https://doi.org/10.x/abc`` and ``doi:10.x/abc`` must
+    # produce one key, or the two passes let the same paper through twice.
+    doi = normalise_doi(str(getattr(paper, "doi", "") or ""))
     if doi:
         keys.add(f"doi:{doi}")
     arxiv_id = str(getattr(paper, "arxiv_id", "") or "").strip().lower()
@@ -98,8 +102,7 @@ def _paper_identity_keys(paper: Any) -> set[str]:
         arxiv_base = re.sub(r"v\d+$", "", arxiv_id)
         keys.add(f"arxiv:{arxiv_base}")
     title = str(getattr(paper, "title", "") or "")
-    normalised = re.sub(r"[^a-z0-9\s]", "", title.lower())
-    normalised = re.sub(r"\s+", " ", normalised).strip()
+    normalised = normalise_title(title)
     if normalised:
         keys.add(f"title:{normalised}")
     return keys
@@ -1220,11 +1223,14 @@ def _execute_literature_screen(
         ):
             row["abstract"] = abstract[: screening.max_abstract_chars] + "..."
         # Strip authors list — not needed for screening and inflates tokens.
-        # MeSH descriptors are the same story: keep the term bare (``pub_types``
-        # is retained, it is the evidence-level signal), because a 20-tag MeSH
-        # list per paper adds ~200 chars and no decision changes.
+        # Keep a few MeSH descriptors: they are the cheapest signal that a
+        # paper is clinical (``Humans``, ``Randomized Controlled Trial``) rather
+        # than molecular, which is what the evidence-level rule keys on. The
+        # full 20-tag list is prompt ballast, so it is trimmed, not deleted.
         row.pop("authors", None)
-        row.pop("mesh_terms", None)
+        mesh = row.get("mesh_terms")
+        if isinstance(mesh, (list, tuple)):
+            row["mesh_terms"] = list(mesh)[:5]
 
     # Rebuild candidates_text from filtered rows
     candidates_text = "\n".join(

@@ -677,3 +677,98 @@ class TestFastAPIApp:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             resp = await ac.post("/api/pipeline/stop")
             assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_run_exposes_literature_block(
+        self, app: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from httpx import AsyncClient, ASGITransport
+
+        monkeypatch.chdir(tmp_path)
+        run_id = "rc-20260101-120000-abcdef"
+        stage_dir = tmp_path / "artifacts" / run_id / "stage-04"
+        stage_dir.mkdir(parents=True)
+        _ = (stage_dir / "search_meta.json").write_text(
+            json.dumps({"sources": ["openalex"], "total_candidates": 25}),
+            encoding="utf-8",
+        )
+        rows = [
+            {
+                "id": f"p{idx}",
+                "title": f"Title {idx}",
+                "year": 2024,
+                "venue": "Venue",
+                "doi": f"10.1234/paper{idx}",
+                "url": f"https://example.org/{idx}",
+                "source": "openalex",
+                "is_preprint": False,
+                "retracted": idx == 0,
+                "concern": True,
+                "cite_key": f"key{idx}",
+                "abstract": "x" * 500,
+            }
+            for idx in range(25)
+        ]
+        _ = (stage_dir / "candidates.jsonl").write_text(
+            "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+        )
+
+        transport = ASGITransport(app=app)  # type: ignore[arg-type]
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get(f"/api/runs/{run_id}")
+
+        assert resp.status_code == 200
+        literature = resp.json()["literature"]
+        assert literature["sources"] == ["openalex"]
+        assert literature["counts"]["total"] == 25
+        assert literature["counts"]["by_source"] == {"openalex": 25}
+        assert literature["search_meta"]["total_candidates"] == 25
+        assert len(literature["candidates"]) == 20
+        first = literature["candidates"][0]
+        assert set(first) == {
+            "id",
+            "title",
+            "year",
+            "venue",
+            "doi",
+            "url",
+            "source",
+            "is_preprint",
+            "retracted",
+            "concern",
+            "cite_key",
+        }
+        assert first["retracted"] is True
+        assert first["concern"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_run_without_literature_artifacts_returns_nulls(
+        self, app: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from httpx import AsyncClient, ASGITransport
+
+        monkeypatch.chdir(tmp_path)
+        run_id = "rc-20260101-120000-fedcba"
+        (tmp_path / "artifacts" / run_id).mkdir(parents=True)
+
+        transport = ASGITransport(app=app)  # type: ignore[arg-type]
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get(f"/api/runs/{run_id}")
+
+        assert resp.status_code == 200
+        literature = resp.json()["literature"]
+        assert literature["sources"] is None
+        assert literature["search_meta"] is None
+        assert literature["candidates"] == []
+        assert literature["counts"]["total"] == 0
+
+
+class TestPipelineStartSchema:
+    """The start request must not advertise fields the route does not apply."""
+
+    def test_config_overrides_is_not_a_request_field(self) -> None:
+        from researchclaw.server.routes.pipeline import PipelineStartRequest
+
+        assert "config_overrides" not in PipelineStartRequest.model_fields
+        schema = PipelineStartRequest.model_json_schema()
+        assert "config_overrides" not in schema["properties"]

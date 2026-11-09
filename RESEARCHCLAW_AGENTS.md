@@ -84,7 +84,7 @@ Run `researchclaw info -c config.yaml` to see the resolved values before guessin
 | Knob | What it does |
 |---|---|
 | `llm.extra_headers` | Fixed HTTP headers on every LLM request **and** on `researchclaw doctor` probes. `auto` → fresh `researchclaw-<hex>` session id per client. Required by gateways that route on headers: OpenCode Go needs `x-opencode-session: "auto"`, otherwise every call is `400 MissingSessionID` and doctor misreports `api_key_valid: 403` |
-| `literature_search.sources` | Any subset of `openalex`, `semantic_scholar`, `arxiv`, `openreview`, `crossref`, `pubmed`, `europepmc`, `core`; called in the listed order, unknown names skipped, `s2` is an alias for `semantic_scholar` |
+| `literature_search.sources` | Any subset of `openalex`, `semantic_scholar`, `arxiv`, `openreview`, `crossref`, `pubmed`, `europepmc`, `core`; called in the listed order, unknown names skipped, `s2` is an alias for `semantic_scholar` and `europe_pmc` for `europepmc` |
 | `literature_search.*_api_key` / `*_env` | Source credentials. Inline wins over env. `CORE_API_KEY` is **required** for `core`; `S2_API_KEY` avoids unauthenticated 429s; `NCBI_API_KEY` raises PubMed 3 → 10 req/s; OpenAlex works keyless from a shared per-IP pool |
 | `literature_search.pubmed_domain_gate` | `true` → PubMed and Europe PMC are dropped unless `research.domains` looks biomedical (word-level query translation floods ML topics with clinical hits) |
 | `web_search.enable_pdf_extraction` | Passes open-access `pdf_url` links from Stage 4 to the PDF extractor; text lands in `stage-04/web_context.md` (needs `pip install "researchclaw[pdf]"`) |

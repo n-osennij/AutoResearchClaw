@@ -20,7 +20,6 @@ import logging
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
-from typing import Any
 
 from researchclaw.literature._http import fetch_bytes, fetch_json
 from researchclaw.literature.models import Author, Paper
@@ -256,15 +255,16 @@ def search_pubmed(
                 timeout=_TIMEOUT,
             )
             root = ET.fromstring(raw)  # noqa: S314 - trusted NCBI endpoint
+            papers.extend(_parse_articles(root, year_min))
         except Exception as exc:  # noqa: BLE001
             # One failing batch must not discard the articles already parsed.
             logger.warning("PubMed efetch failed for %r: %s", query, exc)
             continue
-        papers.extend(_parse_articles(root, year_min))
-        if not api_key and start + _EFETCH_BATCH < len(ids):
-            # NCBI allows 3 req/s without a key; efetch batches are sequential,
-            # so a 20k-record sweep without this pause gets 429s and a ban.
-            time.sleep(0.34)
+        finally:
+            # Paced even when the batch failed: NCBI allows 3 req/s without a
+            # key, and an unpaced failure loop is exactly what earns a ban.
+            if not api_key and start + _EFETCH_BATCH < len(ids):
+                time.sleep(0.34)
 
     logger.info("PubMed: found %d papers for %r", len(papers), query)
     return papers

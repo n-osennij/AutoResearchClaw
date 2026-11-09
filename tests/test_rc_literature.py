@@ -47,7 +47,7 @@ from researchclaw.literature.arxiv_client import (
 from researchclaw.literature.search import (
     SourceKeys,
     _deduplicate,
-    _normalise_title,
+    normalise_title,
     papers_to_bibtex,
     search_papers,
     search_papers_multi_query,
@@ -466,9 +466,9 @@ class TestDeduplication:
         result = _deduplicate([p1, p2])
         assert len(result) == 2
 
-    def test_normalise_title(self) -> None:
-        assert _normalise_title("  The Great Paper!!! ") == "the great paper"
-        assert _normalise_title("A/B Testing: Methods") == "ab testing methods"
+    def testnormalise_title(self) -> None:
+        assert normalise_title("  The Great Paper!!! ") == "the great paper"
+        assert normalise_title("A/B Testing: Methods") == "ab testing methods"
 
 
 class TestBibtexEscaping:
@@ -1099,10 +1099,10 @@ class TestMultiSourceFallback:
 
     def test_s2_alias_shares_the_canonical_source_spec(self) -> None:
         """``s2`` is an alias: same adapter, same cache key, same pacing."""
-        from researchclaw.literature.search import _SOURCES, _normalise_source
+        from researchclaw.literature.search import _SOURCES, normalise_source
 
-        assert _normalise_source("S2") == "s2"
-        assert _normalise_source("Semantic-Scholar") == "semantic_scholar"
+        assert normalise_source("S2") == "s2"
+        assert normalise_source("Semantic-Scholar") == "semantic_scholar"
         assert _SOURCES["s2"].name == "semantic_scholar"
         assert _SOURCES["s2"].adapter is _SOURCES["semantic_scholar"].adapter
         assert _SOURCES["s2"].pause_sec == _SOURCES["semantic_scholar"].pause_sec
@@ -2056,23 +2056,23 @@ class TestTitleNormalisation:
     """Round-2 audit: Greek folding order and non-Latin titles."""
 
     def test_accented_greek_matches_plain(self) -> None:
-        from researchclaw.literature.search import _normalise_title
+        from researchclaw.literature.search import normalise_title
 
         # NFKD must run before the Greek fold, otherwise the accent deletes
         # the letter: "ά-synuclein" used to normalise to "synuclein".
-        assert _normalise_title("ά-synuclein") == _normalise_title("α-synuclein")
-        assert _normalise_title("ά-synuclein") == "asynuclein"
+        assert normalise_title("ά-synuclein") == normalise_title("α-synuclein")
+        assert normalise_title("ά-synuclein") == "asynuclein"
 
     def test_greek_and_ascii_spelling_merge(self) -> None:
-        from researchclaw.literature.search import _normalise_title
+        from researchclaw.literature.search import normalise_title
 
-        assert _normalise_title("α-synuclein") == _normalise_title("a-synuclein")
-        assert _normalise_title("β") != _normalise_title("α")
+        assert normalise_title("α-synuclein") == normalise_title("a-synuclein")
+        assert normalise_title("β") != normalise_title("α")
 
     def test_accented_latin_folds(self) -> None:
-        from researchclaw.literature.search import _normalise_title
+        from researchclaw.literature.search import normalise_title
 
-        assert _normalise_title("Café au lait") == _normalise_title("Cafe au lait")
+        assert normalise_title("Café au lait") == normalise_title("Cafe au lait")
 
     def test_cjk_titles_are_not_used_as_dedup_key(self) -> None:
         """Two different Chinese titles sharing an ASCII tail must not merge."""

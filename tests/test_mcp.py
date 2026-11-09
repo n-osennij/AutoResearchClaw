@@ -282,6 +282,224 @@ class TestMCPServer:
         assert result["success"] is False
         assert "rate limited" in result["error"]
 
+    # ── search_literature: evidence fields, limits, sources ──────────
+
+    @staticmethod
+    def _papers(count: int, **overrides: Any) -> list[Any]:
+        from researchclaw.literature.models import Author, Paper
+
+        return [
+            Paper(
+                paper_id=f"p{i}",
+                title=f"Paper {i}",
+                authors=(Author(name="Ada Lovelace"),),
+                year=2024,
+                source="pubmed",
+                **overrides,
+            )
+            for i in range(count)
+        ]
+
+    @staticmethod
+    def _patch_search(
+        monkeypatch: pytest.MonkeyPatch, papers: list[Any], captured: dict[str, Any]
+    ) -> None:
+        def fake_search(query: str, **kwargs: Any) -> list[Any]:
+            captured["query"] = query
+            captured.update(kwargs)
+            return papers
+
+        monkeypatch.setattr("researchclaw.literature.search.search_papers", fake_search)
+
+    def test_search_literature_carries_evidence_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.literature.models import Paper
+
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+        papers = [
+            Paper(
+                paper_id="retracted-1",
+                title="Retracted Study",
+                year=2021,
+                source="pubmed",
+                pmid="12345678",
+                doi="10.1000/xyz",
+                arxiv_id="2101.00001",
+                venue="Journal of Things",
+                citation_count=42,
+                pub_types=("Journal Article", "Retraction of Publication"),
+                is_preprint=False,
+                retracted=True,
+                concern=True,
+            )
+        ]
+        self._patch_search(monkeypatch, papers, captured)
+
+        result = asyncio.run(
+            server.handle_tool_call("search_literature", {"query": "retractions"})
+        )
+
+        assert result["success"] is True
+        row = result["results"][0]
+        assert row["retracted"] is True
+        assert row["concern"] is True
+        assert row["is_preprint"] is False
+        assert row["pmid"] == "12345678"
+        assert isinstance(row["pub_types"], list)
+        assert "Retraction of Publication" in row["pub_types"]
+        assert row["citation_count"] == 42
+        assert row["venue"] == "Journal of Things"
+        assert row["source"] == "pubmed"
+        assert row["doi"] == "10.1000/xyz"
+        assert row["arxiv_id"] == "2101.00001"
+        assert "pdf_url" in row
+        # The retraction is visible in the title too, not only in a flag.
+        assert row["title"].startswith("[RETRACTED]")
+
+    def test_search_literature_evidence_fields_absent_flags_default_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+        self._patch_search(monkeypatch, self._papers(1), captured)
+
+        result = asyncio.run(
+            server.handle_tool_call("search_literature", {"query": "clean"})
+        )
+
+        row = result["results"][0]
+        assert row["retracted"] is False
+        assert row["concern"] is False
+        assert row["is_preprint"] is False
+        assert row["pub_types"] == []
+
+    @pytest.mark.parametrize("bad_limit", [-5, 0])
+    def test_search_literature_non_positive_max_results_defaults_to_ten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_limit: int
+    ) -> None:
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+        self._patch_search(monkeypatch, self._papers(12), captured)
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "search_literature", {"query": "x", "max_results": bad_limit}
+            )
+        )
+
+        assert captured["limit"] == 10
+        assert len(result["results"]) == 10
+        assert result["count"] == len(result["results"])
+
+    def test_search_literature_clamps_huge_max_results(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+        self._patch_search(monkeypatch, self._papers(150), captured)
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "search_literature", {"query": "x", "max_results": 500}
+            )
+        )
+
+        assert captured["limit"] == 100
+        assert len(result["results"]) == 100
+        assert result["count"] == len(result["results"])
+
+    @pytest.mark.parametrize("bad_sources", [{"openalex": 1}, [1, 2], 5, [["arxiv"]]])
+    def test_search_literature_rejects_bad_sources(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_sources: Any
+    ) -> None:
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+        self._patch_search(monkeypatch, self._papers(1), captured)
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "search_literature", {"query": "x", "sources": bad_sources}
+            )
+        )
+
+        assert "error" in result
+        assert result["success"] is False
+        assert "sources" in result["error"]
+        assert "search_papers" not in captured  # never reached the backends
+
+    def test_search_literature_accepts_bare_string_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+        self._patch_search(monkeypatch, self._papers(1), captured)
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "search_literature", {"query": "x", "sources": "pubmed"}
+            )
+        )
+
+        assert result["success"] is True
+        assert captured["sources"] == ("pubmed",)
+        assert "unknown_sources" not in result
+
+    def test_search_literature_reports_unknown_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(tmp_path)
+        captured: dict[str, Any] = {}
+        self._patch_search(monkeypatch, self._papers(0), captured)
+
+        result = asyncio.run(
+            server.handle_tool_call(
+                "search_literature", {"query": "x", "sources": ["pubmedd"]}
+            )
+        )
+
+        assert result["success"] is True
+        assert result["unknown_sources"] == ["pubmedd"]
+        assert "pubmed" in result["valid_sources"]
+
+    def test_search_literature_uses_config_sources_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.config import RCConfig
+
+        config = RCConfig.from_dict(
+            {
+                "project": {"name": "mcp-test", "mode": "docs-first"},
+                "research": {"topic": "mcp testing", "min_year": 2019},
+                "runtime": {"timezone": "UTC"},
+                "notifications": {"channel": "local"},
+                "knowledge_base": {"root": str(tmp_path / "kb")},
+                "literature_search": {"sources": ["pubmed"]},
+                "llm": {
+                    "provider": "openai-compatible",
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key_env": "RC_TEST_KEY",
+                    "api_key": "inline",
+                },
+            },
+            project_root=tmp_path,
+            check_paths=False,
+        )
+        server = ResearchClawMCPServer(
+            config=config, artifacts_root=tmp_path / "artifacts"
+        )
+        captured: dict[str, Any] = {}
+        self._patch_search(monkeypatch, self._papers(1), captured)
+
+        result = asyncio.run(
+            server.handle_tool_call("search_literature", {"query": "x"})
+        )
+
+        assert result["success"] is True
+        assert captured["sources"] == ("pubmed",)
+        assert captured["year_min"] == 2019
+
     def test_handle_review_paper(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

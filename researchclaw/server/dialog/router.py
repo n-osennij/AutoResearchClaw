@@ -105,8 +105,8 @@ async def _handle_config(text: str, session: ChatSession) -> str:
         "You can modify the configuration through:\n"
         "1. Edit `config.yaml` directly\n"
         "2. Use the wizard: `researchclaw wizard`\n"
-        "3. Pass overrides when starting: "
-        '`POST /api/pipeline/start {"config_overrides": {...}}`\n\n'
+        "3. Pass a topic when starting: "
+        '`POST /api/pipeline/start {"topic": "..."}`\n\n'
         "What setting would you like to change?"
     )
 

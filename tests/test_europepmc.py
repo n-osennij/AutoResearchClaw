@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from researchclaw.literature.europepmc_client import (
-    EPMC_PREPRINT_FILTER,
     _build_query,
     _clean,
     _retracted,
@@ -139,21 +138,6 @@ class TestPreprints:
         paper = search_europepmc("klebsiella", limit=5)[0]
         assert paper.is_preprint is True
         assert paper.venue == "bioRxiv"
-
-    def test_preprints_only_adds_src_filter(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        seen: list[str] = []
-
-        def fake(url: str, **kwargs: object) -> dict:
-            seen.append(url)
-            return _payload([])
-
-        monkeypatch.setattr(
-            "researchclaw.literature.europepmc_client.fetch_json", fake
-        )
-        search_europepmc("crispr", preprints_only=True)
-        assert "SRC%3APPR" in seen[0] or EPMC_PREPRINT_FILTER in seen[0]
 
     def test_preprint_without_author_list_has_no_authors_when_empty(
         self, monkeypatch: pytest.MonkeyPatch

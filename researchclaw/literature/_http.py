@@ -84,10 +84,13 @@ def _read_limited(response: object, source: str) -> bytes:
         return b""
     chunks: list[bytes] = []
     total = 0
+    previous = b""
     while True:
+        sized = True
         try:
             chunk = read(256 * 1024)
         except TypeError:  # stream whose read() takes no size
+            sized = False
             chunk = read()
         if not chunk:
             break
@@ -97,6 +100,15 @@ def _read_limited(response: object, source: str) -> bytes:
                 f"{source} response exceeded {_MAX_BODY_BYTES} bytes; truncated"
             )
         chunks.append(chunk)
+        if chunk == previous:
+            # A stream that keeps handing back the same bytes is done, not
+            # infinite: asking again cannot make progress.
+            break
+        previous = chunk
+        if not sized or len(chunk) < 256 * 1024:
+            # ``read(n)`` returning a short buffer means EOF (or a stream that
+            # ignores the size hint and returned everything it had).
+            break
     return b"".join(chunks)
 
 

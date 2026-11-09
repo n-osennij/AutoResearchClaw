@@ -29,6 +29,7 @@ import urllib.request
 from typing import Any
 
 from researchclaw.literature.models import Author, Paper
+from researchclaw.literature._http import _read_limited
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ def _request_with_retry(
                 },
             )
             with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
-                body = resp.read().decode("utf-8")
+                body = _read_limited(resp, "OpenAlex").decode("utf-8")
                 return json.loads(body)
         except urllib.error.HTTPError as exc:
             if exc.code == 429:
