@@ -1,6 +1,6 @@
 # Literature search (Stages 3–6)
 
-How a topic becomes an evidence base: seven academic backends, a publication-year
+How a topic becomes an evidence base: eight academic backends, a publication-year
 policy with a second pass for older foundations, a configurable screening budget,
 and a year-policy-aware cache.
 
@@ -11,7 +11,7 @@ and a year-policy-aware cache.
 - **Implementation:** `researchclaw/literature/` (clients + cache) and
   `researchclaw/pipeline/stage_impls/_literature.py` (Stages 3–6).
 
-**Literature sources and their keys.** Stage 4 queries any subset of seven
+**Literature sources and their keys.** Stage 4 queries any subset of eight
 backends; list them in `literature_search.sources` (order matters, unknown
 names are skipped). Keys go inline (`*_api_key`) or into the env var named by
 `*_env` — inline wins.
@@ -24,6 +24,7 @@ names are skipped). Keys go inline (`*_api_key`) or into the env var named by
 | `openreview` | ICLR/NeurIPS submissions with PDFs | none |
 | `crossref` | publisher metadata (ACM/IEEE/Springer/Elsevier) + DOI | none; `openalex_email` is reused as the polite contact |
 | `pubmed` | MEDLINE | `NCBI_API_KEY` optional — raises 3 → 10 req/s |
+| `europepmc` | MEDLINE **plus** bioRxiv/medRxiv/Research Square preprints, publication types (`Review`, `Randomized Controlled Trial`, `Retracted Publication`), retraction notices and full-text links; no key, no documented quota | none |
 | `core` | open-access full text | `CORE_API_KEY` **required** (free at <https://core.ac.uk/services/api>) |
 
 ### How Stages 4–6 build the evidence base
@@ -84,9 +85,14 @@ Stage 4 warns when the policy changed or when entries predate this tracking, and
 `Result:` stays `PASS`. Clear it with `rm -rf .researchclaw_cache/literature`
 (it is gitignored and holds only search results).
 
-**PubMed and open-access PDFs.** `pubmed_domain_gate: true` drops PubMed unless
-`research.domains` looks biomedical — its word-level query translation floods an
-ML topic with irrelevant clinical hits. Open-access `pdf_url` links captured by
+**Biomedical sources and open-access PDFs.** `pubmed_domain_gate: true` drops
+PubMed *and* Europe PMC unless `research.domains` looks biomedical — both are
+MEDLINE vendors whose word-level query translation floods an ML topic with
+irrelevant clinical hits. Europe PMC is the only backend that reports preprints
+(`SRC:PPR`), preprints, publication types and retraction flags; a record marked retracted is dropped from candidates at Stage 4 (and from the
+screening set again at Stage 5, which guards resumed runs), with the drop logged. When a paper exists both as a preprint and
+in a journal, deduplication keeps the journal version regardless of citation
+counts. Open-access `pdf_url` links captured by
 any source are passed to the PDF extractor when
 `web_search.enable_pdf_extraction` is on (pip extra `pdf`); the extracted text
 lands in `stage-04/web_context.md`.

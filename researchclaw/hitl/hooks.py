@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -37,6 +39,23 @@ class HookResult:
     output: str = ""
     error: str = ""
     duration_sec: float = 0.0
+
+
+def _hook_command(script: Path) -> list[str]:
+    """Interpreter command for a hook script, or ``[]`` when none exists.
+
+    POSIX runs an executable ``.sh`` directly and lets the shebang decide.
+    Windows has no shebang, so ``.sh`` goes through Git Bash/MSYS ``sh`` when
+    one is on PATH (otherwise the hook fails with a readable message instead
+    of ``WinError 193``), and ``.py`` always goes through this interpreter.
+    """
+    suffix = script.suffix.lower()
+    if suffix == ".py":
+        return [sys.executable, str(script)]
+    if suffix == ".sh" and os.name == "nt":
+        shell = shutil.which("bash") or shutil.which("sh")
+        return [shell, str(script)] if shell else []
+    return [str(script)]
 
 
 class HookRegistry:
@@ -215,10 +234,22 @@ class HookRegistry:
         if self.run_dir:
             env["RC_RUN_DIR"] = str(self.run_dir)
 
+        command = _hook_command(script)
         t0 = time.monotonic()
+        if not command:
+            return HookResult(
+                hook_name=f"{hook_name} ({script.name})",
+                success=False,
+                error=(
+                    f"Cannot run {script.name}: no interpreter for its "
+                    f"extension on this platform (set a shebang-compatible "
+                    f"shell on PATH, e.g. Git Bash for .sh hooks)"
+                ),
+                duration_sec=0.0,
+            )
         try:
             result = subprocess.run(
-                [str(script)],
+                command,
                 capture_output=True,
                 text=True,
                 timeout=30,

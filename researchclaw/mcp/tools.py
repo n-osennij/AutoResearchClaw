@@ -51,12 +51,24 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_literature",
-        "description": "Search academic papers on a topic using Semantic Scholar and arXiv.",
+        "description": (
+            "Search academic papers on a topic. Defaults to OpenAlex, Semantic "
+            "Scholar and arXiv; pass `sources` for others (openreview, crossref, "
+            "pubmed, europepmc, core)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
                 "max_results": {"type": "integer", "description": "Max results (default 10)"},
+                "sources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Backends to query. Omit for openalex, semantic_scholar, "
+                        "arxiv. Use pubmed/europepmc for biomedical topics."
+                    ),
+                },
             },
             "required": ["query"],
         },

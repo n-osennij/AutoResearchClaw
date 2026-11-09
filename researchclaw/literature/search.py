@@ -1,7 +1,7 @@
 """Unified literature search with deduplication.
 
 Combines results from the academic backends in ``_SOURCES`` — OpenAlex,
-Semantic Scholar, arXiv, OpenReview, Crossref, PubMed and CORE —
+Semantic Scholar, arXiv, OpenReview, Crossref, PubMed, Europe PMC and CORE —
 deduplicates by DOI → arXiv ID → fuzzy title match, and returns a merged
 list sorted by citation count (descending).
 
@@ -21,18 +21,20 @@ Public API
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import importlib
 import logging
 import re
 import time
+import unicodedata
 import urllib.error
 from typing import cast
 
 from researchclaw.literature.arxiv_client import search_arxiv
 from researchclaw.literature.core_client import search_core
 from researchclaw.literature.crossref_client import search_crossref
-from researchclaw.literature.models import Author, Paper
+from researchclaw.literature.europepmc_client import search_europepmc
+from researchclaw.literature.models import Author, Paper, normalise_doi
 from researchclaw.literature.openalex_client import search_openalex
 from researchclaw.literature.openreview_client import search_openreview
 from researchclaw.literature.pubmed_client import search_pubmed
@@ -41,8 +43,9 @@ from researchclaw.literature.semantic_scholar import search_semantic_scholar
 logger = logging.getLogger(__name__)
 
 # OpenAlex first (10K/day), then S2 (1K/5min), then arXiv (1/3s) — least
-# pressure on the most restrictive API.  OpenReview / Crossref / PubMed / CORE
-# are additive sources appended by the caller when the domain needs them.
+# pressure on the most restrictive API.  OpenReview / Crossref / PubMed /
+# Europe PMC / CORE are additive sources appended by the caller when the domain
+# needs them.
 _DEFAULT_SOURCES = ("openalex", "semantic_scholar", "arxiv")
 
 
@@ -117,6 +120,12 @@ def _pubmed_adapter(
     )
 
 
+def _europepmc_adapter(
+    query: str, limit: int, year_min: int, keys: SourceKeys
+) -> list[Paper]:
+    return search_europepmc(query, limit=limit, year_min=year_min)
+
+
 def _core_adapter(
     query: str, limit: int, year_min: int, keys: SourceKeys
 ) -> list[Paper]:
@@ -154,13 +163,25 @@ _SOURCES: dict[str, _SourceSpec] = {
     ),
     "crossref": _SourceSpec("crossref", "Crossref", _crossref_adapter, 0.5),
     "pubmed": _SourceSpec("pubmed", "PubMed", _pubmed_adapter, 0.5),
+    # Europe PMC is the biomedical superset (MEDLINE + preprints + full text);
+    # listed under both its own name and the shorthand people type in configs.
+    "europepmc": _SourceSpec(
+        "europepmc", "Europe PMC", _europepmc_adapter, 0.5
+    ),
+    "europe_pmc": _SourceSpec(
+        "europepmc", "Europe PMC", _europepmc_adapter, 0.5
+    ),
     "core": _SourceSpec("core", "CORE", _core_adapter, 0.5),
 }
 
 
-def _normalise_source(name: str) -> str:
+def normalise_source(name: str) -> str:
     """``semantic-scholar`` / ``Semantic Scholar`` → ``semantic_scholar``."""
     return name.lower().replace("-", "_").replace(" ", "_")
+
+
+# Backwards-compatible alias: the pipeline and tests imported the private name.
+_normalise_source = normalise_source
 
 
 CacheGet = Callable[[str, str, int, int], list[dict[str, object]] | None]
@@ -188,6 +209,13 @@ def _as_int(value: object, default: int = 0) -> int:
         except ValueError:
             return default
     return default
+
+
+def _as_str_tuple(value: object) -> tuple[str, ...]:
+    """``["A", "B"]`` from a cache entry → ``("A", "B")``; anything else → ()."""
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(str(item) for item in value if isinstance(item, str) and item)
 
 
 def _dicts_to_papers(dicts: list[dict[str, object]]) -> list[Paper]:
@@ -222,6 +250,11 @@ def _dicts_to_papers(dicts: list[dict[str, object]]) -> list[Paper]:
                     url=str(d.get("url", "")),
                     pdf_url=str(d.get("pdf_url", "")),
                     source=str(d.get("source", "")),
+                    pmid=str(d.get("pmid", "")),
+                    is_preprint=bool(d.get("is_preprint", False)),
+                    pub_types=_as_str_tuple(d.get("pub_types")),
+                    mesh_terms=_as_str_tuple(d.get("mesh_terms")),
+                    retracted=bool(d.get("retracted", False)),
                     _bibtex_override=str(d.get("_bibtex_override", "")),
                 )
             )
@@ -273,11 +306,17 @@ def search_papers(
     source_stats: dict[str, int] = {}  # track per-source counts
     cache_hits = 0
 
+    seen_specs: set[str] = set()
     for src in sources:
         spec = _SOURCES.get(_normalise_source(src))
         if spec is None:
             logger.warning("Unknown literature source: %s (skipped)", src)
             continue
+        # Aliases ("s2", "europe_pmc") resolve to one spec; querying it twice
+        # would burn a request and a cache write for identical results.
+        if spec.name in seen_specs:
+            continue
+        seen_specs.add(spec.name)
         try:
             papers = spec.adapter(query, limit, year_min, keys)
             all_papers.extend(papers)
@@ -376,18 +415,82 @@ def search_papers_multi_query(
 # ------------------------------------------------------------------
 
 
+# Greek letters carry meaning in biomedical titles: α- and β-synuclein are
+# different proteins, and Na+/K+-ATPase is not "NaKATPase". NFKD has no
+# compatibility mapping for them, so fold to Latin first; then the two titles
+# stay distinct in the dedup key instead of collapsing to the same string.
+_GREEK_FOLD = str.maketrans(
+    {
+        "α": "a", "β": "b", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "e",
+        "θ": "th", "ι": "i", "κ": "k", "λ": "l", "μ": "u", "ν": "n", "ξ": "x",
+        "ο": "o", "π": "p", "ρ": "r", "σ": "s", "ς": "s", "τ": "t", "υ": "u",
+        "φ": "ph", "ϕ": "ph", "χ": "ch", "ψ": "ps", "ω": "o",
+    }
+)
+
+
 def _normalise_title(title: str) -> str:
-    """Lower-case, strip punctuation, collapse whitespace."""
-    t = title.lower()
+    """Lower-case, fold accents, strip punctuation, collapse whitespace."""
+    t = unicodedata.normalize("NFKD", title.lower().translate(_GREEK_FOLD))
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
     t = re.sub(r"[^a-z0-9\s]", "", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def _carry_metadata(old: Paper, new: Paper) -> Paper:
+    """Merge what the discarded duplicate knew onto the surviving record.
+
+    Citation counts come from OpenAlex/S2, retraction and MeSH knowledge only
+    from the biomedical backends. Picking the winner by citations alone would
+    drop the retraction flag for the exact papers where it matters most, so the
+    survivor keeps: ``retracted`` (OR), ``pmid``, ``mesh_terms``/``pub_types``
+    (union), and a ``pdf_url`` the winner lacks. Preprint status needs no merge:
+    ``_prefer_published`` already made a journal record win when one existed.
+    """
+    merged = new
+    changes: dict[str, object] = {}
+    if old.retracted and not new.retracted:
+        changes["retracted"] = True
+    if old.pmid and not new.pmid:
+        changes["pmid"] = old.pmid
+    if old.mesh_terms and not set(old.mesh_terms) <= set(new.mesh_terms):
+        changes["mesh_terms"] = tuple(dict.fromkeys((*new.mesh_terms, *old.mesh_terms)))
+    if old.pub_types and not set(old.pub_types) <= set(new.pub_types):
+        changes["pub_types"] = tuple(dict.fromkeys((*new.pub_types, *old.pub_types)))
+    if old.pdf_url and not new.pdf_url:
+        changes["pdf_url"] = old.pdf_url
+    return replace(merged, **changes) if changes else merged
+
+
+def _mark_retracted(results: list[Paper], idx: int) -> None:
+    """Flag an already-stored duplicate as retracted, in place."""
+    if not results[idx].retracted:
+        results[idx] = replace(results[idx], retracted=True)
+
+
+def _prefer_published(kept: Paper, candidate: Paper) -> bool:
+    """Decide whether duplicate *candidate* should replace the stored *kept*.
+
+    The published version wins over a preprint: once a bioRxiv paper is in a
+    journal, citing the preprint link is simply wrong, no matter how many
+    citations the preprint portal happened to accumulate. Otherwise the
+    higher cited record wins (Semantic Scholar/OpenAlex data over thin
+    source-only records).
+    """
+    if kept.is_preprint and not candidate.is_preprint:
+        return True
+    if candidate.is_preprint and not kept.is_preprint:
+        return False
+    return candidate.citation_count > kept.citation_count
 
 
 def _deduplicate(papers: list[Paper]) -> list[Paper]:
     """Remove duplicates.  Priority: DOI > arXiv ID > fuzzy title.
 
-    When a duplicate is found, the entry with higher citation_count wins
-    (i.e. Semantic Scholar data is preferred over arXiv-only data).
+    Published records beat preprints (see :func:`_prefer_published`); between
+    two records of the same kind the more-cited one wins. The survivor's
+    identifiers are re-registered after every merge, so a third record that
+    only shares the *loser's* DOI/arXiv id still folds into the right entry.
     """
     seen_doi: dict[str, int] = {}
     seen_arxiv: dict[str, int] = {}
@@ -397,43 +500,37 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
     def _update_indices(p: Paper, idx: int) -> None:
         """Register all identifiers of *p* in the lookup dicts at *idx*."""
         if p.doi:
-            seen_doi[p.doi.lower().strip()] = idx
+            seen_doi[normalise_doi(p.doi)] = idx
         if p.arxiv_id:
             seen_arxiv[p.arxiv_id.strip()] = idx
         norm = _normalise_title(p.title)
         if norm:
             seen_title[norm] = idx
 
-    def _replace_at(old: Paper, new: Paper, idx: int) -> None:
-        """Replace paper at *idx* and clean up stale index entries."""
-        # Remove old identifiers that the new paper does NOT share
-        if old.doi:
-            old_doi = old.doi.lower().strip()
-            new_doi = new.doi.lower().strip() if new.doi else ""
-            if old_doi != new_doi and seen_doi.get(old_doi) == idx:
-                del seen_doi[old_doi]
-        if old.arxiv_id:
-            old_ax = old.arxiv_id.strip()
-            new_ax = new.arxiv_id.strip() if new.arxiv_id else ""
-            if old_ax != new_ax and seen_arxiv.get(old_ax) == idx:
-                del seen_arxiv[old_ax]
-        old_norm = _normalise_title(old.title)
-        new_norm = _normalise_title(new.title)
-        if old_norm and old_norm != new_norm and seen_title.get(old_norm) == idx:
-            del seen_title[old_norm]
-        result[idx] = new
-        _update_indices(new, idx)
+    def _merge_duplicate(idx: int, paper: Paper) -> None:
+        """Fold duplicate *paper* into ``results[idx]`` and re-index it.
+
+        Index entries of the discarded record are deliberately *kept*: they
+        still point at ``idx``, so a later record that only carries the
+        loser's DOI/arXiv id folds into the same entry instead of creating a
+        second copy.
+        """
+        kept = result[idx]
+        if _prefer_published(kept, paper):
+            result[idx] = _carry_metadata(kept, paper)
+        else:
+            _mark_retracted(result, idx)
+        _update_indices(result[idx], idx)
 
     for paper in papers:
         is_dup = False
 
         # Check DOI
         if paper.doi:
-            doi_key = paper.doi.lower().strip()
+            doi_key = normalise_doi(paper.doi)
             if doi_key in seen_doi:
                 idx = seen_doi[doi_key]
-                if paper.citation_count > result[idx].citation_count:
-                    _replace_at(result[idx], paper, idx)
+                _merge_duplicate(idx, paper)
                 is_dup = True
 
         # Check arXiv ID
@@ -441,8 +538,7 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
             ax_key = paper.arxiv_id.strip()
             if ax_key in seen_arxiv:
                 idx = seen_arxiv[ax_key]
-                if paper.citation_count > result[idx].citation_count:
-                    _replace_at(result[idx], paper, idx)
+                _merge_duplicate(idx, paper)
                 is_dup = True
 
         # Check fuzzy title
@@ -450,8 +546,7 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
             norm = _normalise_title(paper.title)
             if norm and norm in seen_title:
                 idx = seen_title[norm]
-                if paper.citation_count > result[idx].citation_count:
-                    _replace_at(result[idx], paper, idx)
+                _merge_duplicate(idx, paper)
                 is_dup = True
 
         if is_dup:
@@ -466,6 +561,22 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
 
 
 def papers_to_bibtex(papers: Sequence[Paper]) -> str:
-    """Generate a combined BibTeX file from a list of papers."""
-    entries = [p.to_bibtex() for p in papers]
+    """Generate a combined BibTeX file from a list of papers.
+
+    Duplicate cite keys are fatal in BibTeX — the second entry silently
+    shadows the first, so a review that cites two different 2024 Zhang papers
+    loses a reference. Keys are de-duplicated with ``a``/``b``/``c`` suffixes
+    in input order, which keeps the first occurrence unchanged.
+    """
+    entries: list[str] = []
+    seen: dict[str, int] = {}
+    for paper in papers:
+        entry = paper.to_bibtex()
+        base = paper.cite_key
+        count = seen.get(base, 0)
+        seen[base] = count + 1
+        if count:
+            suffix = "abcdefghijklmnopqrstuvwxyz"[count - 1] if count < 26 else str(count)
+            entry = entry.replace("{" + base + ",", "{" + base + suffix + ",", 1)
+        entries.append(entry)
     return "\n\n".join(entries) + "\n"

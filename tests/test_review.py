@@ -90,7 +90,7 @@ class TestLiteratureReview:
         assert "**Hybrid pass:** on" in review
         assert "## Screening" in review
         assert "- **Collected candidates:** 42" in review
-        assert "| 1 | KV Cache Compression | 2023 | NeurIPS | 120 | 0.9 | openalex |" in review
+        assert "| 1 | KV Cache Compression | 2023 | NeurIPS |  | 120 | 0.9 | openalex |" in review
         assert "Cache \\| Pipes" in review
         assert "### Quantization card" in review
         assert "#### Method" in review
@@ -153,3 +153,22 @@ class TestLiteratureReview:
         review = generate_literature_review(run_dir)
         assert "- **Collected candidates:** 42" in review
         assert "- **Passed keyword prefilter:** 30" in review
+
+class TestEvidenceTypeColumn:
+    def test_preprint_and_retraction_are_visible(self, tmp_path: Path) -> None:
+        run = _run_dir(tmp_path)
+        shortlist = run / "stage-05" / "shortlist.jsonl"
+        rows = [
+            json.loads(line)
+            for line in shortlist.read_text(encoding="utf-8").splitlines()
+        ]
+        rows[0]["is_preprint"] = True
+        rows[0]["retracted"] = True
+        rows[0]["pub_types"] = ["Preprint"]
+        rows[1]["pub_types"] = ["Randomized Controlled Trial", "Journal Article"]
+        body = ("\n".join(json.dumps(r) for r in rows)) + "\n"
+        shortlist.write_text(body, encoding="utf-8")
+        review = generate_literature_review(run)
+        assert "preprint" in review
+        assert "retracted" in review
+        assert "Randomized Controlled Trial" in review

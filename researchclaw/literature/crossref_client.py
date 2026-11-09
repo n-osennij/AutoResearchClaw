@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 _BASE = "https://api.crossref.org/works"
 _TIMEOUT = 45
 _SELECT = (
-    "DOI,title,author,issued,container-title,is-referenced-by-count,type,URL,abstract"
+    "DOI,title,author,issued,container-title,is-referenced-by-count,type,URL,"
+    "abstract,updated-by"
 )
 
 _JATS_RE = re.compile(r"<[^>]+>")
@@ -72,6 +73,14 @@ def _to_paper(item: dict[str, Any]) -> Paper | None:
             year = 0
 
     doi = str(item.get("DOI") or "")
+    # Crossref calls preprints ``posted-content``; the flag decides which record
+    # wins dedup, so a bioRxiv/SSRN record must not pass as a journal article.
+    is_preprint = str(item.get("type") or "").lower() == "posted-content"
+    updates = item.get("updated-by") or []
+    retracted = any(
+        isinstance(entry, dict) and entry.get("type") == "retraction"
+        for entry in updates
+    )
     return Paper(
         paper_id=doi or str(item.get("URL") or ""),
         title=title,
@@ -83,6 +92,8 @@ def _to_paper(item: dict[str, Any]) -> Paper | None:
         doi=doi,
         url=str(item.get("URL") or ""),
         source="crossref",
+        is_preprint=is_preprint,
+        retracted=retracted,
     )
 
 

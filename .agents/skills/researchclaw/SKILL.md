@@ -45,7 +45,8 @@ The knobs that actually matter:
 | `llm.provider` + `base_url` + `api_key_env` + `primary_model` | OpenAI-compatible. Presets: openai, openrouter, deepseek, atlascloud, anthropic, kimi-anthropic, minimax*, novita, ollama |
 | `llm.extra_headers` | Headers on every request and doctor probe. `auto` → per-client session id |
 | `llm.reviewer_model` / `fallback_models` | optional second opinion and fallback chain |
-| `literature_search.sources` | subset of openalex, semantic_scholar, arxiv, openreview, crossref, pubmed, core |
+| `literature_search.pubmed_domain_gate` | `true` → drop PubMed and Europe PMC unless `research.domains` looks biomedical |
+| `literature_search.sources` | subset of openalex, semantic_scholar, arxiv, openreview, crossref, pubmed, europepmc, core |
 | `literature_search.max_results_per_query` | **40** results per source per query (default) |
 | `literature_search.max_screen_chars` / `max_abstract_chars` / `min_shortlist` | Stage-5 screening budget; example config ships the 1M preset 600 000 / 1 200 / 25 (~345 papers, ~150k tokens) |
 | `literature_search.*_api_key` / `*_env` | `CORE_API_KEY` required for `core`; S2/NCBI optional |

@@ -17,6 +17,7 @@ Public API
 from __future__ import annotations
 
 import logging
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -44,9 +45,17 @@ def _common_params(api_key: str, email: str) -> dict[str, str]:
 
 
 def _text(node: ET.Element | None) -> str:
+    """All text under *node*, whitespace-collapsed.
+
+    MEDLINE wraps titles and abstracts with newlines and indentation. Those
+    newlines end up in screening prompts and ``references.bib``; a title with
+    an embedded ``
+- [fake2024]`` line injects a phantom reference into the
+    prompt. Collapsing here fixes every consumer at once.
+    """
     if node is None:
         return ""
-    return "".join(node.itertext()).strip()
+    return " ".join("".join(node.itertext()).split())
 
 
 def _to_paper(article: ET.Element) -> Paper | None:
@@ -58,10 +67,14 @@ def _to_paper(article: ET.Element) -> Paper | None:
     if not title:
         return None
 
-    abstract_parts = [
-        _text(node) for node in citation.findall("Article/Abstract/AbstractText")
-    ]
-    abstract = " ".join(part for part in abstract_parts if part)
+    abstract_parts = []
+    for node in citation.findall("Article/Abstract/AbstractText"):
+        text = _text(node)
+        if not text:
+            continue
+        label = (node.get("Label") or "").strip()
+        abstract_parts.append(f"{label}: {text}" if label else text)
+    abstract = " ".join(abstract_parts)
 
     authors: list[Author] = []
     for node in citation.findall("Article/AuthorList/Author"):
@@ -103,7 +116,67 @@ def _to_paper(article: ET.Element) -> Paper | None:
         doi=doi,
         url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
         source="pubmed",
+        pmid=pmid,
+        pub_types=_pub_types(article, citation),
+        mesh_terms=_mesh_terms(citation),
+        retracted=_retracted(article, citation),
+        concern="Expression of Concern" in _pub_types(article, citation),
     )
+
+
+def _pub_types(article: ET.Element, citation: ET.Element) -> tuple[str, ...]:
+    """Publication types (``Journal Article``, ``Review``, ``Randomized
+    Controlled Trial`` …) — the only evidence-level signal MEDLINE gives us."""
+    raw = [
+        _text(node)
+        for node in citation.findall("Article/PublicationTypeList/PublicationType")
+    ]
+    if not raw:
+        # ``article`` may be a <MedlineCitation> or the whole <PubmedArticle>.
+        for path in (
+            "Article/PublicationTypeList/PublicationType",
+            "MedlineCitation/Article/PublicationTypeList/PublicationType",
+        ):
+            raw = [_text(node) for node in article.findall(path)]
+            if raw:
+                break
+    seen: list[str] = []
+    for value in raw:
+        if value and value not in seen:
+            seen.append(value)
+    return tuple(seen)
+
+
+def _mesh_terms(citation: ET.Element) -> tuple[str, ...]:
+    """MeSH descriptors — the biomedical vocabulary screening and synthesis
+    need to judge topical relevance beyond keyword overlap."""
+    terms: list[str] = []
+    for heading in citation.findall("MeshHeadingList/MeshHeading"):
+        value = _text(heading.find("DescriptorName"))
+        if value and value not in terms:
+            terms.append(value)
+    return tuple(terms)
+
+
+# ``Retraction in`` marks the retracted article; ``Retraction of`` marks the
+# notice that points at it, which is a valid citation in its own right.
+_RETRACTION_TYPES = frozenset({"Retraction in", "Partial Retraction in"})
+
+
+def _retracted(article: ET.Element, citation: ET.Element) -> bool:
+    """True when this record's paper has been retracted.
+
+    NCBI signals it twice: as a ``Retracted Publication`` type on the article,
+    and as a ``Retraction in`` reference to the notice. The notice carries the
+    opposite marker (``Retraction of``), so it is not flagged — it is the
+    record you cite when warning readers about the retraction.
+    """
+    if "Retracted Publication" in _pub_types(article, citation):
+        return True
+    for node in citation.findall("CommentsCorrectionsList/CommentsCorrections"):
+        if (node.get("RefType") or "") in _RETRACTION_TYPES:
+            return True
+    return False
 
 
 def search_pubmed(
@@ -188,6 +261,10 @@ def search_pubmed(
             logger.warning("PubMed efetch failed for %r: %s", query, exc)
             continue
         papers.extend(_parse_articles(root, year_min))
+        if not api_key and start + _EFETCH_BATCH < len(ids):
+            # NCBI allows 3 req/s without a key; efetch batches are sequential,
+            # so a 20k-record sweep without this pause gets 429s and a ban.
+            time.sleep(0.34)
 
     logger.info("PubMed: found %d papers for %r", len(papers), query)
     return papers

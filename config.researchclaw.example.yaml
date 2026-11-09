@@ -114,13 +114,18 @@ llm:
 literature_search:
   # Stage 4 academic search backends, tried in the order listed. All are free;
   # only "core" needs a key to work at all. Unknown names are skipped with a
-  # warning, `s2` is accepted as an alias for `semantic_scholar`.
+  # warning, `s2` and `europe_pmc` are accepted as aliases for `semantic_scholar`.
   #   openalex         — metadata + citation counts; polite pool via email
   #   semantic_scholar — citation counts, strongest ML coverage
   #   arxiv            — preprints
   #   openreview       — conference submissions (ICLR/NeurIPS ...) with PDFs
   #   crossref         — publisher metadata (ACM/IEEE/Springer/Elsevier) + DOI
   #   pubmed           — MEDLINE; biomedical only, see pubmed_domain_gate
+  #   europepmc        — MEDLINE + bioRxiv/medRxiv/Research Square, pub types,
+  #                      retraction flags, open-access PDFs; no key, no quota.
+  #                      Suggester: add it to biomedical projects; it is the
+  #                      only backend that reports preprints, publication
+  #                      types and retractions together.
   #   core             — open-access full text; main supplier of pdf_url
   # Keys live in the matching `*_api_key` field or in the env var named by
   # `*_env` (inline wins). For Semantic Scholar the chain is
@@ -186,7 +191,8 @@ literature_search:
   core_api_key: ""
   # PubMed translates queries word by word, so on a non-biomedical topic it
   # returns mostly unrelated clinical hits. When true, the source is skipped
-  # unless research.domains contains a biomedical domain.
+  # unless research.domains contains a biomedical domain. Europe PMC runs the
+  # same gate (both are MEDLINE vendors) and has no separate switch.
   pubmed_domain_gate: false
 
 security:

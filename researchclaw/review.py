@@ -249,16 +249,17 @@ def _screening_section(
 
     if shortlist:
         lines.append(
-            "| # | Title | Year | Venue | Cites | Relevance | Source |"
+            "| # | Title | Year | Venue | Type | Cites | Relevance | Source |"
         )
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for idx, row in enumerate(shortlist, 1):
             lines.append(
-                "| {idx} | {title} | {year} | {venue} | {cites} | {rel} | {src} |".format(
+                "| {idx} | {title} | {year} | {venue} | {kind} | {cites} | {rel} | {src} |".format(
                     idx=idx,
-                    title=_cell(row.get("title", "")),
+                    title=_row_title(row),
                     year=_cell(row.get("year", "")),
                     venue=_cell(row.get("venue", "")),
+                    kind=_cell(_paper_kind(row)),
                     cites=_cell(row.get("citation_count", "")),
                     rel=_cell(row.get("relevance_score", "")),
                     src=_cell(row.get("source", "")),
@@ -266,6 +267,37 @@ def _screening_section(
             )
         lines.append("")
     return "\n".join(lines)
+
+
+def _paper_kind(row: dict[str, Any]) -> str:
+    """Evidence type for the review table: preprint, RCT, review …
+
+    A biomedical review is read by someone who needs to see at a glance that a
+    claim rests on a medRxiv preprint rather than a randomized trial. Every
+    backend that can tell us already puts it in the row; this just surfaces it.
+    """
+    if row.get("is_preprint"):
+        return "preprint"
+    pub_types = row.get("pub_types") or []
+    if isinstance(pub_types, list | tuple):
+        # MEDLINE lists the most specific type first ("Randomized Controlled
+        # Trial" before "Journal Article"); prefer the first non-generic one.
+        for value in pub_types:
+            text = str(value).strip()
+            if text and text.lower() not in {"journal article", "research support"}:
+                return text
+    return ""
+
+
+def _row_title(row: dict[str, Any]) -> str:
+    """Title cell with retraction/concern markers."""
+    title = _cell(row.get("title", ""))
+    marks = []
+    if row.get("retracted"):
+        marks.append("retracted")
+    if row.get("concern"):
+        marks.append("expression of concern")
+    return f"{title} ⚠️ ({', '.join(marks)})" if marks else title
 
 
 def _cards_section(run_dir: Path) -> str:

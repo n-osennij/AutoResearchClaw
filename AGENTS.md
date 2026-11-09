@@ -2,7 +2,7 @@
 
 ResearchClaw (package `researchclaw`, v0.5.0, MIT) is a 23-stage autonomous
 research pipeline: a topic goes in, a conference paper comes out — real
-literature from seven backends, sandboxed experiments, multi-agent review,
+literature from eight backends, sandboxed experiments, multi-agent review,
 LaTeX export. Nothing here is OpenClaw-specific; any agent that can run a
 shell command can drive it.
 
@@ -50,9 +50,9 @@ Everything is one YAML file; `config.yaml` overrides the example.
 | `llm.provider` / `base_url` / `api_key_env` / `primary_model` | Any OpenAI-compatible endpoint. Presets: `openai`, `openrouter`, `deepseek`, `atlascloud`, `anthropic`, `kimi-anthropic`, `minimax*`, `novita`, `ollama`, `openai-compatible` |
 | `llm.extra_headers` | Fixed headers on every request **and** on doctor probes. `auto` → a fresh `researchclaw-<hex>` id per LLM client. Required by gateways that route on headers (OpenCode Go: `x-opencode-session`, otherwise `400 MissingSessionID`) |
 | `llm.provider: acp` + `llm.acp.agent` | Any coding CLI becomes the LLM backend through `acpx` (`claude`, `codex`, `gh`, `opencode`, `pi`). No API key needed — the agent uses its own. Reviewer and debate panel reuse the same agent |
-| `literature_search.sources` | Any subset of `openalex`, `semantic_scholar`, `arxiv`, `openreview`, `crossref`, `pubmed`, `core`; order matters, unknown names are skipped |
+| `literature_search.sources` | Any subset of `openalex`, `semantic_scholar`, `arxiv`, `openreview`, `crossref`, `pubmed`, `europepmc`, `core`; order matters, unknown names are skipped |
 | `literature_search.*_api_key` / `*_env` | Inline wins over env. `CORE_API_KEY` is required for `core`; `S2_API_KEY` and `NCBI_API_KEY` are optional improvements; OpenAlex works keyless from a shared pool |
-| `literature_search.pubmed_domain_gate` | `true` → drop PubMed unless `research.domains` looks biomedical |
+| `literature_search.pubmed_domain_gate` | `true` → drop PubMed **and** Europe PMC unless `research.domains` looks biomedical |
 | `research.min_year` | publication-year floor for the primary pass, default 2020; `0` = no cutoff. Doctor reports it as a pass while the default hybrid pass is on; it warns only when `hybrid_search: false` |
 | `research.hybrid_search` / `foundational_*` | second, unfiltered pass recovering pre-floor foundations (on by default; 10/source, cap 40) — papers tagged `year_band="foundational"`. Cache key includes `min_year`; stage 4 and doctor warn about a stale cache |
 | `literature_search.max_screen_chars` / `max_abstract_chars` / `min_shortlist` | Stage-5 screening budget. Code default 100 000 / 800 / 15 (~74 papers, ~25k tokens); the example config ships the 1M preset 600 000 / 1 200 / 25 (~345 papers, ~150k tokens) |

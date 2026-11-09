@@ -411,6 +411,10 @@ def _execute_search_strategy(
     )
 
 
+# Substring-matched against ``research.domains``. The list has to cover the
+# common biomedical departments, not just the ones whose spelling contains
+# "bio"/"med": with the genealogy of a pharmacology or immunology group, a miss
+# here silently switches MEDLINE off for exactly the users who need it.
 _BIOMED_DOMAIN_HINTS = (
     "bio",
     "med",
@@ -420,28 +424,61 @@ _BIOMED_DOMAIN_HINTS = (
     "health",
     "genom",
     "oncolog",
+    "immun",
+    "pharm",
+    "drug",
+    "physiolog",
+    "cardio",
+    "patholog",
+    "microbio",
+    "infect",
+    "vaccin",
+    "metabol",
+    "nutrition",
+    "nurs",
+    "dental",
+    "surg",
 )
+
+
+# Backends that only make sense for life-sciences topics. PubMed's query
+# translation is word-level ("KV inference" expands to "kv" AND (cache...)
+# AND (infer...)), so on an ML topic it returns hundreds of irrelevant clinical
+# hits; Europe PMC indexes the same MEDLINE records plus preprints.
+_BIOMED_SOURCES = frozenset({"pubmed", "europepmc", "europe_pmc"})
 
 
 def _sources_for_domains(
     sources: tuple[str, ...], domains: tuple[str, ...], *, gate_pubmed: bool = True
 ) -> tuple[str, ...]:
-    """Drop PubMed when the run targets a non-biomedical domain.
+    """Drop the biomedical backends when the run targets another domain.
 
-    PubMed's query translation is word-level ("KV inference" expands to
-    "kv" AND (cache...) AND (infer...)), so on an ML topic it returns hundreds
-    of irrelevant clinical hits and pollutes screening.
+    Both PubMed and Europe PMC are word-level-matching biomedical indexes: on
+    an ML topic they return hundreds of irrelevant clinical hits and pollute
+    screening. The gate keys off ``research.domains`` because a topic string
+    alone does not say whether "sequence" means genomes or tokens.
     """
     if not gate_pubmed:
         return sources
+    # Imported here, not at module scope: ``researchclaw.literature.search``
+    # pulls in every source client, and this module is imported by the stage
+    # registry long before any search runs.
+    from researchclaw.literature.search import normalise_source
+
     labels = " ".join(str(d).lower() for d in domains)
     if any(hint in labels for hint in _BIOMED_DOMAIN_HINTS):
         return sources
-    filtered = tuple(src for src in sources if src.lower() != "pubmed")
+    filtered = tuple(
+        src for src in sources if normalise_source(src) not in _BIOMED_SOURCES
+    )
     if len(filtered) != len(sources):
+        dropped = sorted(
+            src for src in sources if normalise_source(src) in _BIOMED_SOURCES
+        )
         logger.info(
-            "[literature] PubMed skipped — domain(s) %s are not biomedical "
+            "[literature] %s skipped — domain(s) %s are not biomedical "
             "(set literature_search.pubmed_domain_gate: false to force it)",
+            ", ".join(dropped),
             ", ".join(str(d) for d in domains) or "none",
         )
     return filtered
@@ -479,6 +516,7 @@ def _execute_literature_collect(
     try:
         from researchclaw.literature.search import (
             SourceKeys,
+            normalise_source,
             search_papers_multi_query,
             papers_to_bibtex,
         )
@@ -655,6 +693,19 @@ def _execute_literature_collect(
                     )
             except Exception:  # noqa: BLE001 - cache policy must never block a run
                 logger.debug("Cache policy check skipped", exc_info=True)
+        # --- Retraction filter (PubMed / Europe PMC records) ---
+        # A retracted paper is not evidence: citing it without the notice is
+        # how a literature review loses credibility. Cheaper to drop here than
+        # to hope the screener notices the ``retracted`` flag.
+        retracted = [p for p in papers if getattr(p, "retracted", False)]
+        if retracted:
+            papers = [p for p in papers if not getattr(p, "retracted", False)]
+            logger.warning(
+                "[literature] Dropped %d retracted paper(s): %s",
+                len(retracted),
+                "; ".join(p.title[:60] for p in retracted[:3]),
+            )
+
         if papers:
             real_search_succeeded = True
             # Count by source
@@ -955,9 +1006,15 @@ def _execute_literature_screen(
     )
     filtered_rows: list[dict[str, Any]] = []
     dropped_count = 0
+    retracted_dropped = 0
     for raw_line in candidates_text.strip().splitlines():
         row = _safe_json_loads(raw_line, {})
         if not isinstance(row, dict):
+            continue
+        # Stage 4 drops retracted records, but a resumed or hand-edited run can
+        # still carry them; never let one reach the shortlist.
+        if row.get("retracted"):
+            retracted_dropped += 1
             continue
         title = str(row.get("title", "")).lower()
         abstract = str(row.get("abstract", "")).lower()
@@ -971,6 +1028,12 @@ def _execute_literature_screen(
             filtered_rows.append(row)
         else:
             dropped_count += 1
+    if retracted_dropped:
+        logger.warning(
+            "[literature] Screening skipped %d retracted paper(s)",
+            retracted_dropped,
+        )
+
     # If pre-filter dropped everything, fall back to original (safety valve)
     if not filtered_rows:
         filtered_rows = _parse_jsonl_rows(candidates_text)
@@ -989,8 +1052,12 @@ def _execute_literature_screen(
             and len(abstract) > screening.max_abstract_chars
         ):
             row["abstract"] = abstract[: screening.max_abstract_chars] + "..."
-        # Strip authors list — not needed for screening and inflates tokens
+        # Strip authors list — not needed for screening and inflates tokens.
+        # MeSH descriptors are the same story: keep the term bare (``pub_types``
+        # is retained, it is the evidence-level signal), because a 20-tag MeSH
+        # list per paper adds ~200 chars and no decision changes.
         row.pop("authors", None)
+        row.pop("mesh_terms", None)
 
     # Rebuild candidates_text from filtered rows
     candidates_text = "\n".join(

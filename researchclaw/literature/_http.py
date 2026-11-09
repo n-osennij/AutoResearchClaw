@@ -70,6 +70,36 @@ def _retry_delay(exc: Exception, attempt: int, base_delay: float) -> float | Non
     return None
 
 
+# A literature response is at most a few MB (1000 EPMC records with abstracts
+# ~5 MB, a 10k-record PubMed efetch ~40 MB). Anything past this is a broken or
+# hostile response, and reading it into memory is how a 60 s timeout turns into
+# an OOM kill.
+_MAX_BODY_BYTES = 64 * 1024 * 1024
+
+
+def _read_limited(response: object, source: str) -> bytes:
+    """Read a response body, refusing to buffer more than ``_MAX_BODY_BYTES``."""
+    read = getattr(response, "read", None)
+    if read is None:  # pragma: no cover - only for exotic file-like objects
+        return b""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        try:
+            chunk = read(256 * 1024)
+        except TypeError:  # stream whose read() takes no size
+            chunk = read()
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _MAX_BODY_BYTES:
+            raise ValueError(
+                f"{source} response exceeded {_MAX_BODY_BYTES} bytes; truncated"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def fetch_bytes(
     url: str,
     *,
@@ -112,7 +142,7 @@ def fetch_bytes(
         request = urllib.request.Request(url, headers=headers or {})
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.read()
+                return _read_limited(response, source)
         except Exception as exc:  # noqa: BLE001 - re-raised below
             last_exc = exc
             delay = _retry_delay(exc, attempt, base_delay)

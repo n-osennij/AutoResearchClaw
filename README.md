@@ -385,7 +385,7 @@ Phase D: Experiment Design         Phase H: Finalization
 
 | Feature | Description |
 |---------|------------|
-| **📚 Multi-Source Literature** | Real papers from seven backends — OpenAlex, Semantic Scholar and arXiv by default, plus opt-in OpenReview, Crossref, PubMed and CORE. Query expansion, cross-source deduplication, retry with `Retry-After`, circuit breaker with graceful degradation, open-access `pdf_url` capture feeding full-text extraction |
+| **📚 Multi-Source Literature** | Real papers from eight backends — OpenAlex, Semantic Scholar and arXiv by default, plus opt-in OpenReview, Crossref, PubMed, Europe PMC and CORE (PubMed adds MeSH terms and publication types; both add preprint flags and retraction/expression-of-concern markers). Query expansion, cross-source deduplication, retry with `Retry-After`, circuit breaker with graceful degradation, open-access `pdf_url` capture feeding full-text extraction |
 | **🔍 4-Layer Citation Verification** | arXiv ID check → CrossRef/DataCite DOI → Semantic Scholar title match → LLM relevance scoring. Hallucinated refs auto-removed. |
 | **🖥️ Hardware-Aware Execution** | Auto-detects GPU (NVIDIA CUDA / Apple MPS / CPU-only) and adapts code generation, imports, and experiment scale accordingly |
 | **🦾 OpenCode Beast Mode** | Complex experiments auto-routed to [OpenCode](https://github.com/anomalyco/opencode) — generates multi-file projects with custom architectures, training loops, and ablation studies. Install via `researchclaw setup`. |
@@ -689,7 +689,9 @@ literature_search:
   pubmed_api_key: ""                # Optional; NCBI key → 10 req/s instead of 3
   core_api_key_env: "CORE_API_KEY"
   core_api_key: ""                  # Required by the "core" source; an open-access PDF supplier
-  pubmed_domain_gate: false         # true → skip PubMed unless research.domains is biomedical
+  pubmed_domain_gate: false         # true → skip PubMed/Europe PMC unless research.domains is biomedical
+  # europepmc needs no key: MEDLINE + bioRxiv/medRxiv preprints,
+  # publication types and retraction flags. Add "europepmc" to sources to use it.
 
 # === Experiment ===
 experiment:

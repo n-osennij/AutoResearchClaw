@@ -10,6 +10,7 @@ import json
 import textwrap
 import urllib.error
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from email.message import Message
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -441,6 +442,40 @@ class TestDeduplication:
     def test_normalise_title(self) -> None:
         assert _normalise_title("  The Great Paper!!! ") == "the great paper"
         assert _normalise_title("A/B Testing: Methods") == "ab testing methods"
+
+
+class TestBibtexEscaping:
+    def test_special_characters_are_escaped(self) -> None:
+        paper = _make_paper(title="Q&A: 50% of $100 #1 {a} _b", source="pubmed")
+        bib = paper.to_bibtex()
+        assert r"Q\&A" in bib
+        assert r"50\%" in bib
+        assert r"\$100" in bib
+        assert r"\#1" in bib
+        assert r"\{a\}" in bib
+        assert r"\_b" in bib
+
+    def test_tilde_and_caret_render_as_latex_macros(self) -> None:
+        paper = _make_paper(title="a~b^c", source="pubmed")
+        title_line = [
+            line for line in paper.to_bibtex().splitlines() if "title" in line
+        ][0]
+        assert r"\textasciitilde{}" in title_line
+        assert r"\textasciicircum{}" in title_line
+        assert "\t" not in title_line  # no raw TAB
+
+    def test_preprint_uses_misc_with_server(self) -> None:
+        paper = replace(
+            _make_paper(paper_id="PPR9", source="europepmc", venue="bioRxiv"),
+            is_preprint=True,
+        )
+        bib = paper.to_bibtex()
+        assert bib.startswith("@misc{")
+        assert "howpublished = {bioRxiv}" in bib
+
+    def test_journal_article_stays_article(self) -> None:
+        paper = _make_paper(venue="Nature", source="pubmed")
+        assert paper.to_bibtex().startswith("@article{")
 
 
 class TestPapersToBibtex:
@@ -1163,6 +1198,21 @@ class TestHttpRetry:
         """A 10-minute Retry-After must fail fast, not stall a pipeline stage."""
         assert self._failing_run(monkeypatch, _http_error(429, "600")) == []
 
+    def test_oversized_body_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_http.time, "sleep", lambda _s: None)
+
+        def _huge(*_a: Any, **_kw: Any) -> Any:
+            resp = MagicMock()
+            resp.read.side_effect = [b"x" * (8 * 1024 * 1024), b""]
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        monkeypatch.setattr(_http.urllib.request, "urlopen", _huge)
+        monkeypatch.setattr(_http, "_MAX_BODY_BYTES", 1024)
+        with pytest.raises(ValueError, match="exceeded"):
+            _http.fetch_bytes("https://example.test", source="Test", max_attempts=1)
+
     def test_success_after_transient_failure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1174,7 +1224,8 @@ class TestHttpRetry:
             if calls["n"] == 1:
                 raise urllib.error.URLError("temporary")
             resp = MagicMock()
-            resp.read.return_value = b'{"ok": true}'
+            # The body is read in chunks now: one chunk, then EOF.
+            resp.read.side_effect = [b'{"ok": true}', b""]
             resp.__enter__ = lambda s: s
             resp.__exit__ = MagicMock(return_value=False)
             return resp
@@ -1521,3 +1572,282 @@ class TestPubMedDomainGate:
 
         selected = _sources_for_domains(self.SOURCES, ("algorithms",), gate_pubmed=False)
         assert selected == self.SOURCES
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Europe PMC domain gate
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestEuropePmcDomainGate:
+    SOURCES = ("openalex", "europepmc", "core")
+
+    def test_europepmc_dropped_for_non_biomedical_domain(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _sources_for_domains
+
+        selected = _sources_for_domains(self.SOURCES, ("algorithms",))
+        assert selected == ("openalex", "core")
+
+    def test_europepmc_kept_for_biomedical_domain(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _sources_for_domains
+
+        selected = _sources_for_domains(self.SOURCES, ("biomedicine",))
+        assert "europepmc" in selected
+
+    def test_both_biomedical_sources_kept(self) -> None:
+        from researchclaw.pipeline.stage_impls._literature import _sources_for_domains
+
+        selected = _sources_for_domains(
+            ("openalex", "europepmc", "pubmed"), ("biomedicine",)
+        )
+        assert selected == ("openalex", "europepmc", "pubmed")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Retraction survives deduplication
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestRetractionDedup:
+    def test_retracted_flag_survives_higher_cited_duplicate(self) -> None:
+        from researchclaw.literature.search import _deduplicate
+
+        flagged = _make_paper(
+            paper_id="pmid:1", doi="10.1/ret", source="pubmed",
+            citation_count=1,
+        )
+        flagged = replace(flagged, retracted=True)
+        richer = _make_paper(
+            paper_id="W1", doi="10.1/ret", source="openalex", citation_count=99,
+        )
+        merged = _deduplicate([flagged, richer])
+        assert len(merged) == 1
+        assert merged[0].citation_count == 99
+        assert merged[0].retracted is True
+
+    def test_retracted_flag_not_lost_when_survivor_is_first(self) -> None:
+        from researchclaw.literature.search import _deduplicate
+
+        richer = _make_paper(
+            paper_id="W1", doi="10.1/ret", source="openalex", citation_count=99,
+        )
+        flagged = replace(
+            _make_paper(
+                paper_id="pmid:1", doi="10.1/ret", source="pubmed", citation_count=1
+            ),
+            retracted=True,
+        )
+        merged = _deduplicate([richer, flagged])
+        assert merged[0].retracted is True
+
+    def test_published_version_beats_cited_preprint(self) -> None:
+        """A journal version wins over the preprint even with fewer citations."""
+        from researchclaw.literature.search import _deduplicate
+
+        preprint = replace(
+            _make_paper(paper_id="PPR1", doi="10.1/x", source="europepmc"),
+            is_preprint=True,
+            citation_count=999,
+            venue="bioRxiv",
+        )
+        published = replace(
+            _make_paper(paper_id="pmid:9", doi="10.1/x", source="pubmed"),
+            citation_count=4,
+            venue="Nature",
+        )
+        merged = _deduplicate([preprint, published])
+        assert len(merged) == 1
+        assert merged[0].is_preprint is False
+        assert merged[0].venue == "Nature"
+
+    def test_cited_preprint_survives_duplicate_journal_record(self) -> None:
+        from researchclaw.literature.search import _deduplicate
+
+        preprint = replace(
+            _make_paper(paper_id="PPR2", doi="10.2/y", source="europepmc"),
+            is_preprint=True,
+            citation_count=2,
+        )
+        published = replace(
+            _make_paper(paper_id="pmid:10", doi="10.2/y", source="pubmed"),
+            citation_count=40,
+        )
+        merged = _deduplicate([preprint, published])
+        assert merged[0].is_preprint is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PubMed retraction semantics
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _pubmed_article(pub_types: list[str], ref_types: list[str]) -> Any:
+    from researchclaw.literature.pubmed_client import _retracted
+
+    nodes = "".join(
+        f'<PublicationType>{value}</PublicationType>' for value in pub_types
+    )
+    refs = "".join(
+        f'<CommentsCorrections RefType="{value}" PMID="1"><RefSource>x</RefSource></CommentsCorrections>'
+        for value in ref_types
+    )
+    xml = f"""<PubmedArticle><MedlineCitation><PMID>1</PMID>
+      <Article><ArticleTitle>T</ArticleTitle>
+      <PublicationTypeList>{nodes}</PublicationTypeList></Article>
+      </MedlineCitation><CommentsCorrectionsList>{refs}</CommentsCorrectionsList>
+    </PubmedArticle>"""
+    root = ET.fromstring(xml)  # noqa: S314 - test fixture
+    return _retracted(root, root)
+
+
+class TestDedupAndKeys:
+    def test_doi_prefixes_collapse(self) -> None:
+        from researchclaw.literature.models import normalise_doi
+        from researchclaw.literature.search import _deduplicate
+
+        assert normalise_doi("https://doi.org/10.1/ABC.") == "10.1/abc"
+        assert normalise_doi("doi:10.1/abc") == "10.1/abc"
+        a = Paper(paper_id="a", title="One paper", doi="10.1/abc", source="crossref")
+        b = Paper(
+            paper_id="b",
+            title="One paper",
+            doi="https://doi.org/10.1/abc",
+            source="pubmed",
+        )
+        assert len(_deduplicate([a, b])) == 1
+
+    def test_greek_letters_do_not_collapse(self) -> None:
+        from researchclaw.literature.search import _deduplicate
+
+        a = Paper(paper_id="a", title="alpha-synuclein aggregation")
+        b = Paper(paper_id="b", title="beta-synuclein aggregation")
+        a = replace(a, title="α-synuclein aggregation")
+        b = replace(b, title="β-synuclein aggregation")
+        assert len(_deduplicate([a, b])) == 2
+
+    def test_bibtex_keys_are_unique(self) -> None:
+        from researchclaw.literature.search import papers_to_bibtex
+
+        papers = [
+            Paper(paper_id=str(i), title="Same title", year=2024, source="x")
+            for i in range(3)
+        ]
+        bib = papers_to_bibtex(papers)
+        keys = [line.split("{", 1)[1].split(",")[0] for line in bib.splitlines() if line.startswith("@")]
+        assert len(keys) == len(set(keys)) == 3
+
+    def test_cite_key_is_bounded(self) -> None:
+        paper = Paper(paper_id="x", title="A" * 500, year=2024)
+        assert len(paper.cite_key) <= 40
+
+    def test_cached_override_with_unbalanced_braces_is_rerendered(self) -> None:
+        paper = replace(
+            Paper(paper_id="x", title="Real title", year=2024),
+            _bibtex_override="@article{broken, title = {unclosed,",
+        )
+        bib = paper.to_bibtex()
+        assert "Real title" in bib
+        assert bib.count("{") == bib.count("}")
+
+    def test_doi_percent_is_escaped(self) -> None:
+        paper = Paper(paper_id="x", title="T", doi="10.1/a%b", url="https://e.org/x?y=1%2Fz")
+        bib = paper.to_bibtex()
+        assert r"10.1/a\%b" in bib
+        assert r"1\%2Fz" in bib
+
+
+class TestClientTypeMapping:
+    def test_openalex_preprint_and_retraction(self) -> None:
+        from researchclaw.literature.openalex_client import _parse_openalex_work
+
+        paper = _parse_openalex_work(
+            {
+                "id": "https://openalex.org/W1",
+                "title": "Preprint",
+                "publication_year": 2024,
+                "type": "preprint",
+                "is_retracted": True,
+            }
+        )
+        assert paper is not None
+        assert paper.is_preprint is True
+        assert paper.retracted is True
+
+    def test_crossref_preprint_and_retraction(self) -> None:
+        from researchclaw.literature.crossref_client import _to_paper
+
+        paper = _to_paper(
+            {
+                "DOI": "10.1101/2024.01.01.1",
+                "title": ["A bioRxiv paper"],
+                "type": "posted-content",
+                "updated-by": [{"type": "retraction", "DOI": "10.1/notice"}],
+            }
+        )
+        assert paper is not None
+        assert paper.is_preprint is True
+        assert paper.retracted is True
+
+    def test_crossref_journal_article_is_not_preprint(self) -> None:
+        from researchclaw.literature.crossref_client import _to_paper
+
+        paper = _to_paper({"DOI": "10.1/j", "title": ["J"], "type": "journal-article"})
+        assert paper is not None
+        assert paper.is_preprint is False
+        assert paper.retracted is False
+
+
+class TestPubMedRetraction:
+    def test_retracted_publication_type(self) -> None:
+        assert _pubmed_article(["Retracted Publication"], []) is True
+
+    def test_retraction_in_reference(self) -> None:
+        assert _pubmed_article(["Journal Article"], ["Retraction in"]) is True
+
+    def test_retraction_notice_is_not_flagged(self) -> None:
+        assert _pubmed_article(["Retraction of Publication"], ["Retraction of"]) is False
+
+    def test_clean_article(self) -> None:
+        assert _pubmed_article(["Journal Article"], []) is False
+
+
+class TestBiomedicalCacheRoundTrip:
+    def test_new_paper_fields_survive_cache(self, tmp_path: Any) -> None:
+        """A cached Europe PMC record must reload with its biomedical fields."""
+        from researchclaw.literature.cache import get_cached, put_cache
+        from researchclaw.literature.search import _dicts_to_papers, _papers_to_dicts
+
+        paper = replace(
+            _make_paper(paper_id="pmid:7", source="europepmc"),
+            pmid="7",
+            is_preprint=True,
+            pub_types=("Preprint",),
+            mesh_terms=("Humans", "Gene Editing"),
+            retracted=True,
+        )
+        put_cache("q", "europepmc", 5, _papers_to_dicts([paper]), cache_base=tmp_path)
+        rows = get_cached("q", "europepmc", 5, cache_base=tmp_path)
+        restored = _dicts_to_papers(rows)
+        assert len(restored) == 1
+        got = restored[0]
+        assert got.pmid == "7"
+        assert got.is_preprint is True
+        assert got.pub_types == ("Preprint",)
+        assert got.mesh_terms == ("Humans", "Gene Editing")
+        assert got.retracted is True
+
+    def test_legacy_cache_row_without_new_fields(self) -> None:
+        """Rows written before the biomedical fields existed still load."""
+        from researchclaw.literature.search import _dicts_to_papers
+
+        legacy = {
+            "paper_id": "s2-1",
+            "title": "Old record",
+            "authors": [],
+            "year": 2020,
+        }
+        got = _dicts_to_papers([legacy])[0]
+        assert got.pmid == ""
+        assert got.is_preprint is False
+        assert got.pub_types == ()
+        assert got.retracted is False

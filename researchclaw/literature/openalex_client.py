@@ -113,7 +113,7 @@ def search_openalex(
         "select": (
             "id,title,authorships,publication_year,primary_location,"
             "cited_by_count,doi,ids,abstract_inverted_index,type,"
-            "open_access,best_oa_location,locations"
+            "open_access,best_oa_location,locations,is_retracted"
         ),
     }
     if api_key:
@@ -364,4 +364,10 @@ def _parse_openalex_work(item: dict[str, Any]) -> Paper:
         url=url,
         pdf_url=pdf_url,
         source="openalex",
+        # ``type`` was already requested and thrown away: a bioRxiv record then
+        # looked peer-reviewed, and since it ties on citations with the journal
+        # version, dedup kept the preprint. ``is_retracted`` is the only
+        # retraction signal OpenAlex has, so ask for it explicitly.
+        is_preprint=str(item.get("type") or "").lower() in {"preprint", "posted-content"},
+        retracted=bool(item.get("is_retracted")),
     )

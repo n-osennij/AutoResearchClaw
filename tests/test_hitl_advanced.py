@@ -333,6 +333,13 @@ class TestHookRegistry:
         assert "division" in results[0].error.lower()
 
     def test_shell_hooks(self, tmp_path: Path) -> None:
+        import shutil
+        import sys
+
+        if sys.platform == "win32" and not (
+            shutil.which("bash") or shutil.which("sh")
+        ):
+            pytest.skip("no POSIX shell on PATH; .sh hooks cannot run here")
         hooks_dir = tmp_path / "hooks"
         hooks_dir.mkdir()
         script = hooks_dir / "pre_stage_08.sh"
@@ -346,6 +353,37 @@ class TestHookRegistry:
         assert len(shell_results) == 1
         assert shell_results[0].success
         assert "hook ran" in shell_results[0].output
+
+    def test_python_hook_runs_through_interpreter(self, tmp_path: Path) -> None:
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        (hooks_dir / "pre_stage_08.py").write_text("print('py hook ran')\n")
+
+        results = [
+            r for r in HookRegistry(run_dir=tmp_path).run_pre_hooks(8, "HYPOTHESIS_GEN")
+            if ".py" in r.hook_name
+        ]
+        assert len(results) == 1
+        assert results[0].success, results[0].error
+        assert "py hook ran" in results[0].output
+
+    def test_shell_hook_without_shell_fails_clearly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.hitl import hooks as hooks_module
+
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        (hooks_dir / "pre_stage_08.sh").write_text("#!/bin/sh\necho hi\n")
+        monkeypatch.setattr(
+            hooks_module, "shutil", type("S", (), {"which": staticmethod(lambda _n: None)})
+        )
+        monkeypatch.setattr(hooks_module.os, "name", "nt")
+        results = HookRegistry(run_dir=tmp_path).run_pre_hooks(8, "HYPOTHESIS_GEN")
+        shell = [r for r in results if ".sh" in r.hook_name]
+        assert len(shell) == 1
+        assert shell[0].success is False
+        assert "no interpreter" in shell[0].error
 
 
 # ══════════════════════════════════════════════════════════════════

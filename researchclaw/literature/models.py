@@ -11,6 +11,20 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+_DOI_PREFIX_RE = re.compile(
+    r"^(?:https?://(?:dx\.)?doi\.org/|doi:)\s*", re.IGNORECASE
+)
+
+
+def normalise_doi(value: str) -> str:
+    """Canonical DOI for comparison: no ``https://doi.org/`` / ``doi:`` prefix.
+
+    ``10.1/ABC.`` and ``https://doi.org/10.1/abc`` are the same paper; without
+    this, the dedup pass keeps both and the verifier 404s on the prefixed form.
+    """
+    doi = _DOI_PREFIX_RE.sub("", (value or "").strip())
+    return doi.strip().strip("<>").rstrip(".,;").strip().lower()
+
 
 @dataclass(frozen=True)
 class Author:
@@ -49,8 +63,19 @@ class Paper:
     url: str = ""
     pdf_url: str = ""  # open-access document URL (CORE and friends)
     # "semantic_scholar" | "arxiv" | "openalex" | "openreview" | "crossref"
-    # | "pubmed" | "core"
+    # | "pubmed" | "europepmc" | "core"
     source: str = ""
+    # Biomedical provenance, filled by PubMed / Europe PMC. ``is_preprint``
+    # matters for ranking and for the review text: a 2025 bioRxiv paper has no
+    # citations yet, so anything that sorts by citations will bury it.
+    pmid: str = ""
+    is_preprint: bool = False
+    pub_types: tuple[str, ...] = ()
+    mesh_terms: tuple[str, ...] = ()
+    retracted: bool = False
+    # "Expression of Concern": citable but flagged; unlike ``retracted`` this
+    # must never cause the paper to be dropped.
+    concern: bool = False
     _bibtex_override: str = field(default="", repr=False)
 
     # ------------------------------------------------------------------
@@ -72,7 +97,10 @@ class Paper:
             if len(cleaned) > 3 and cleaned not in _STOPWORDS:
                 kw = cleaned
                 break
-        return f"{last}{yr}{kw}"
+        # 40 chars is plenty to disambiguate and keeps the .bib key readable;
+        # an unbounded key comes from a long unbroken token and breaks column
+        # widths in every bibliography style.
+        return f"{last}{yr}{kw}"[:40]
 
     # ------------------------------------------------------------------
     # BibTeX generation
@@ -85,17 +113,21 @@ class Paper:
         that directly.  Otherwise construct from metadata.
         """
         if self._bibtex_override:
-            return self._bibtex_override.strip()
+            override = self._bibtex_override.strip()
+            # Cached/edited entries come from disk: a stray ``}`` closes the
+            # field early and corrupts the rest of references.bib. Accept only
+            # a balanced entry that starts like one; otherwise re-render.
+            if _looks_like_bibtex(override):
+                return override
 
         key = self.cite_key
-        authors_str = " and ".join(a.name for a in self.authors) or "Unknown"
+        authors_str = " and ".join(_bibtex_escape(a.name) for a in self.authors) or "Unknown"
 
         # T1.4: Detect arXiv category codes used as venue (e.g. "cs.CY", "math.OC")
         # These are NOT journal names and must be treated as arXiv preprints.
-        import re as _re
         _venue = self.venue or ""
         _is_arxiv_category = bool(
-            _re.match(
+            re.match(
                 r"^(?:cs|math|stat|eess|physics|q-bio|q-fin|astro-ph|cond-mat|"
                 r"gr-qc|hep-ex|hep-lat|hep-ph|hep-th|nlin|nucl-ex|nucl-th|"
                 r"quant-ph)\.[A-Z]{2}$",
@@ -127,7 +159,18 @@ class Paper:
             )
         ):
             entry_type = "inproceedings"
-            venue_field = f"  booktitle = {{{_venue}}},"
+            venue_field = f"  booktitle = {{{_bibtex_escape(_venue)}}},"
+        elif self.is_preprint:
+            # bioRxiv / medRxiv / Research Square: no journal, no volume —
+            # the canonical entry is @misc naming the preprint server, with
+            # a plain url field instead of a \url{} macro (no LaTeX package
+            # assumption for whoever imports references.bib).
+            entry_type = "misc"
+            venue_field = (
+                f"  howpublished = {{{_bibtex_escape(_venue)}}},"
+                if _venue
+                else ""
+            )
         elif self.arxiv_id and (not _venue or _is_arxiv_category):
             # arXiv paper: use standard format with eprint ID
             entry_type = "article"
@@ -135,22 +178,22 @@ class Paper:
         else:
             entry_type = "article"
             venue_field = (
-                f"  journal = {{{_venue or 'Unknown'}}}," if _venue else ""
+                f"  journal = {{{_bibtex_escape(_venue or 'Unknown')}}}," if _venue else ""
             )
 
         lines = [f"@{entry_type}{{{key},"]
-        lines.append(f"  title = {{{self.title}}},")
+        lines.append(f"  title = {{{_bibtex_escape(self.title)}}},")
         lines.append(f"  author = {{{authors_str}}},")
         lines.append(f"  year = {{{self.year or 'Unknown'}}},")
         if venue_field:
             lines.append(venue_field)
         if self.doi:
-            lines.append(f"  doi = {{{self.doi}}},")
+            lines.append(f"  doi = {{{_bibtex_escape_url(normalise_doi(self.doi))}}},")
         if self.arxiv_id:
-            lines.append(f"  eprint = {{{self.arxiv_id}}},")
+            lines.append(f"  eprint = {{{_bibtex_escape_url(self.arxiv_id)}}},")
             lines.append("  archiveprefix = {arXiv},")
         if self.url:
-            lines.append(f"  url = {{{self.url}}},")
+            lines.append(f"  url = {{{_bibtex_escape_url(self.url)}}},")
         lines.append("}")
         return "\n".join(lines)
 
@@ -176,7 +219,55 @@ class Paper:
             "pdf_url": self.pdf_url,
             "source": self.source,
             "cite_key": self.cite_key,
+            "pmid": self.pmid,
+            "is_preprint": self.is_preprint,
+            "pub_types": list(self.pub_types),
+            "mesh_terms": list(self.mesh_terms),
+            "retracted": self.retracted,
+            "concern": self.concern,
         }
+
+
+# BibTeX treats these as markup; an unescaped "&" in a title is a broken
+# .bib file that Zotero/Overleaf silently truncate.
+_BIBTEX_SPECIALS = {
+    "\\": r"\textbackslash{}",
+    "&": r"\&",
+    "%": r"\%",
+    "$": r"\$",
+    "#": r"\#",
+    "_": r"\_",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+
+
+def _bibtex_escape(text: str) -> str:
+    """Escape the characters BibTeX reads as markup."""
+    return "".join(_BIBTEX_SPECIALS.get(ch, ch) for ch in text)
+
+
+# In a url/doi/eprint field only these are actually dangerous: ``%`` starts a
+# LaTeX comment and an unbalanced brace ends the field early. Backslashes are
+# escaped too, since a Windows-style path in a url would otherwise be read as
+# a command.
+_URL_SPECIALS = {"%": r"\%", "{": r"\{", "}": r"\}", "\\": r"\textbackslash{}"}
+
+
+def _bibtex_escape_url(text: str) -> str:
+    """Escape a URL/DOI for a BibTeX field."""
+    return "".join(_URL_SPECIALS.get(ch, ch) for ch in text)
+
+
+def _looks_like_bibtex(entry: str) -> bool:
+    """Cheap structural check for a cached BibTeX override."""
+    if not entry.startswith("@") or "{" not in entry:
+        return False
+    if entry.count("{") != entry.count("}"):
+        return False
+    return entry.rstrip().endswith("}")
 
 
 # Common English stopwords to skip when picking a keyword for cite_key

@@ -168,7 +168,7 @@ separate sessions by design.
 ### Literature Sources and API Keys (Optional)
 
 Stage 4 queries the backends listed in `literature_search.sources`, in order.
-Any subset of these seven works; unknown names are skipped with a warning:
+Any subset of these eight works; unknown names are skipped with a warning:
 
 | Source | What it adds | Key |
 |---|---|---|
@@ -178,6 +178,7 @@ Any subset of these seven works; unknown names are skipped with a warning:
 | `openreview` | ICLR/NeurIPS submissions with PDFs | none |
 | `crossref` | publisher metadata (ACM/IEEE/Springer/Elsevier) + DOI | none; reuses `openalex_email` |
 | `pubmed` | MEDLINE | `NCBI_API_KEY` optional — raises 3 → 10 req/s |
+| `europepmc` | MEDLINE + bioRxiv/medRxiv/Research Square preprints, publication types, retraction flags | none |
 | `core` | open-access full text | `CORE_API_KEY` **required** (free at <https://core.ac.uk/services/api>) |
 
 ```yaml
@@ -186,7 +187,9 @@ literature_search:
   openalex_email: "you@example.com"     # polite-pool contact
   s2_api_key_env: "S2_API_KEY"          # keys may live in env vars (preferred)...
   core_api_key: ""                     # ...or inline (inline wins)
-  pubmed_domain_gate: true             # drop PubMed unless research.domains is biomedical
+  # Drop the MEDLINE vendors (PubMed and Europe PMC) unless research.domains
+  # looks biomedical; both flood non-medical topics with clinical hits.
+  pubmed_domain_gate: true
 ```
 
 Open-access `pdf_url` links captured by any source are handed to the PDF

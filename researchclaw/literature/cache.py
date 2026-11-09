@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import uuid
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ _SOURCE_TTL: dict[str, float] = {
     "arxiv": 86400,         # 24 hours — arXiv metadata updates once/day
     "semantic_scholar": 86400 * 3,  # 3 days
     "openalex": 86400 * 3,  # 3 days
+    "europepmc": 86400 * 3,  # 3 days — MEDLINE weekly refresh + preprint churn
+    "pubmed": 86400 * 3,     # 3 days — same MEDLINE refresh cadence
     "citation_verify": 86400 * 365,  # ~permanent
 }
 
@@ -139,7 +142,10 @@ def put_cache(
     # Write through a temp file: a concurrent read must never see a partially
     # written entry, and a cache failure must not be reported as a source
     # rate-limit (the caller logs exceptions from this block that way).
-    tmp = path.with_name(path.name + ".tmp")
+    # Unique temp name per writer: a fixed ``.tmp`` lets two concurrent searches
+    # (the pipeline runs in a thread, ``verify`` and ``trends`` run in others)
+    # rename one writer's half-finished file into place over the other's.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(tmp, path)
