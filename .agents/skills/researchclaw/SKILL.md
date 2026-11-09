@@ -115,7 +115,7 @@ artifacts/<run>/
 ├── checkpoint.json / heartbeat.json   # resume state, last completed stage
 ├── stage-NN/                          # per-stage artifacts + stage_health.json
 ├── stage-03/queries.json              # search queries + year_min
-├── stage-04/candidates.jsonl          # collected literature (pdf_url filled)
+├── stage-04/candidates.jsonl          # collected literature (pdf_url, year_band)
 ├── stage-04/search_meta.json          # per-source counts, cache hits
 ├── stage-05/screen_meta.json          # candidates screened, shortlist size
 ├── stage-05/shortlist.jsonl           # papers kept for extraction
@@ -157,8 +157,9 @@ to cite.
 
   Longer abstracts cost slots (600k holds ~448 papers at 800 chars vs ~345 at
   1 200). Past ~400–500 papers in one call, precision drops — batch instead.
-- **Shortlist:** the target is 15 papers (backfilled from the prefiltered set if
-  the model returns fewer; an empty model verdict pauses the stage).
+- **Shortlist:** the target is `min_shortlist` papers (code default 15, 25 in
+  the example config; backfilled from the prefiltered set if the model returns
+  fewer; an empty model verdict pauses the stage).
 - **Knowledge cards:** Stage 6 asks for one card per shortlisted paper; the
   template fallback (used when the model returns nothing) takes 6.
 - **Year:** `research.min_year` (default 2020) caps the primary pass;
@@ -167,11 +168,13 @@ to cite.
   keep foundations only when they define the problem/metric/baseline, so recent
   work is not crowded out. 31 curated classics
   (`researchclaw/data/seminal_papers.yaml`) are injected regardless.
+  Verify a run:
+  `grep -c '"year_band": "foundational"' artifacts/<run>/stage-04/candidates.jsonl`.
   The cache key includes `min_year` (and entries are written with the policy),
   so changing the year policy cannot resurrect old hits. Stage 4 still warns
   when the cache was filled under a different policy or predates trackage, and
   `doctor` reports `literature_cache`; delete `.researchclaw_cache/literature/`
-  to reclaim space or force fresh searches.
+  to reclaim space.
 - **Web layer:** 10 web results, 10 scholar results, 5 crawled pages, up to 5
   PDFs per run.
 
@@ -220,4 +223,5 @@ session. For real work keep the pipeline on API models and let pi supervise.
 | `Stage 9: Plan has N conditions (limit …)` | raise `experiment.time_budget_sec` |
 | experiment produced nothing | `stage-12/stage_health.json`, then rerun `--from-stage EXPERIMENT_RUN` |
 | gate blocked the run | `--auto-approve` or `approve` the run directory |
+| `literature_cache` warning in doctor | cache filled under another year policy — `rm -rf .researchclaw_cache/literature` |
 | citations stripped | `stage-23/verification_report.json` says which and why |

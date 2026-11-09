@@ -196,18 +196,25 @@ extractor when `web_search.enable_pdf_extraction` is on (needs
 pacing (1 req/s for S2 and OpenReview) is built in.
 
 `research.min_year` (default 2020) is the publication-year floor for the primary
-pass; set it to `0` for no cutoff. `research.hybrid_search` (on by default) adds
-a second pass without the floor so older foundations are not lost: pre-floor
-papers are deduplicated, capped at `foundational_max_papers` (40) and tagged
-`year_band="foundational"`, and the screener keeps them only when they define
-the problem/metric/baseline. The literature cache is keyed by `min_year`, and
-both Stage 4 and `doctor` warn when cached entries were filled under another
-year policy. Screening then
-keeps the best ~15 papers and Stage 6 turns the shortlist into knowledge cards
-(one per paper; the template fallback uses 6). The screening budget itself is
-configurable: `literature_search.max_screen_chars` (100 000 by default),
-`max_abstract_chars` (800) and `min_shortlist` (15) — see the "Limits" note in
+pass; `0` means no cutoff. `research.hybrid_search` (on by default) adds a
+second pass without the floor so older foundations are not lost: only pre-floor
+papers are kept, deduplicated, capped at `foundational_max_papers` (40) and
+tagged `year_band="foundational"`; the screener keeps them only when they define
+the problem, a metric or a baseline. Set `hybrid_search: false` to search recent
+papers only.
+
+Screening keeps `min_shortlist` papers (code default 15, 25 in the example
+config) and Stage 6 turns the shortlist into knowledge cards (one per paper; the
+template fallback uses 6). The screening budget is configurable:
+`max_screen_chars` (code default 100 000 chars ≈ 25k tokens; the example config
+ships 600 000 for 1M-token models), `max_abstract_chars` (800 / 1 200) and
+`min_shortlist` (15 / 25) — the capacity table is in the "Limits" note of
 `.agents/skills/researchclaw/SKILL.md`.
+
+The literature cache is keyed by `min_year` and records the policy that filled
+it, so switching the floor cannot resurrect old hits; Stage 4 and `doctor` warn
+when the cached policy no longer matches. Clear it with
+`rm -rf .researchclaw_cache/literature`.
 
 ### Research Settings
 
@@ -218,6 +225,10 @@ research:
     - "machine-learning"               # Guides literature search scope
   daily_paper_count: 10                # Target papers to collect
   quality_threshold: 4.0               # Minimum paper quality score (1-5)
+  min_year: 2020                       # Publication-year floor (0 = none)
+  hybrid_search: true                  # + second pass for older foundations
+  foundational_results_per_query: 10   # Results/source/query in that pass
+  foundational_max_papers: 40          # Cap on foundations added per run
 ```
 
 ### Experiment Settings

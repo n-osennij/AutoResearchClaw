@@ -19,7 +19,8 @@ research:
   # and capped, then tagged year_band="foundational" so the screener can weigh
   # them (it is told to keep them only when they define the problem/metric/
   # baseline). Costs one extra search over the base queries — roughly +25-50%
-  # of Stage-4 wall time. Automatically off when min_year is 0.
+  # of Stage-4 wall time. Set false to search recent papers only; automatically
+  # off when min_year is 0.
   hybrid_search: true
   # Results per source per query for the foundational pass (primary uses
   # literature_search.max_results_per_query, default 40).
@@ -165,8 +166,8 @@ literature_search:
   # holds ~448 papers at 800 chars vs ~345 at 1200. Past ~400-500 papers in one
   # call screening precision drops; that is where batching (several calls) wins
   # over a bigger prompt.
-  # Omitting these keys falls back to the conservative code defaults
-  # (100000 / 800 / 15), which fit any 128k-window model.
+  # `researchclaw init` copies these values. Omitting the keys falls back to the
+  # conservative code defaults (100000 / 800 / 15), which fit any 128k model.
   max_screen_chars: 600000
   max_abstract_chars: 1200
   # Target shortlist size; a smaller model verdict is backfilled from the
