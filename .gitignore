@@ -1,3 +1,7 @@
+# Local secrets and session handoff (never tracked)
+/.secrets/
+/HANDOFF.md
+/HANDOFF/
 HANDOFF_METACLAW_SKILL_LOOP.md
 .venv/
 .venv_arc/
