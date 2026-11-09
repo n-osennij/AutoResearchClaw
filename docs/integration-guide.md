@@ -770,6 +770,42 @@ You: Research the impact of attention mechanisms on speech recognition
 Claude: [Reads project context, runs the pipeline, returns results]
 ```
 
+### pi
+
+pi works in two independent roles.
+
+**As the driving agent (recommended).** pi auto-loads `AGENTS.md` from the repo
+root, so opening the project is enough: ask it to run the pipeline, inspect
+stage artifacts, or fix a failed stage. `.claude/skills/` is the *pipeline's*
+skill library, not pi's — pi's own skills live in `~/.agents/skills/` and
+`.agents/skills/`.
+
+**As the LLM backend.** `acpx` 0.20 speaks ACP to pi, so the pipeline can use pi
+for every stage instead of an API model:
+
+```yaml
+llm:
+  provider: "acp"
+  primary_model: "acp:pi"        # label only, the agent picks its own model
+  acp:
+    agent: "pi"                  # claude | codex | gh | opencode | pi
+    cwd: "."
+    session_name: "researchclaw"
+    max_turns: 1                 # one turn per prompt: text output only
+    timeout_sec: 1800            # per-prompt timeout, not per stage
+```
+
+Prerequisites: `acpx` on `PATH` (`npm install -g acpx`) and pi already
+authenticated. `researchclaw doctor -c config.yaml` verifies both the `pi`
+binary and `acpx` before a run. Verified end to end on Windows (acpx 0.20,
+pi 1.5).
+
+Caveats of ACP runs: no separate reviewer model is built (stage 18 and debate
+reuse the same agent), `model`, `max_tokens` and `temperature` are accepted but
+ignored, and one long session carries all 23 stages — expect pi's own
+compaction to kick in. For real workload the better split is pi supervising
+and the pipeline generating with its own API models.
+
 ### Copilot CLI (GitHub)
 
 GitHub Copilot can be used as an ACP agent via the `gh` CLI command (GitHub CLI with Copilot extension). Set the ACP agent to `gh` in your config:

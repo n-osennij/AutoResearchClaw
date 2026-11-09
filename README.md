@@ -250,6 +250,7 @@ AutoResearchClaw can use **any ACP-compatible coding agent** as its LLM backend 
 | Gemini CLI | `gemini` | Google |
 | OpenCode | `opencode` | SST |
 | Kimi CLI | `kimi` | Moonshot |
+| pi | `pi` | Earendil Works; verified with acpx 0.20 (`acpx pi ...`) |
 
 ```yaml
 # config.yaml — ACP example
@@ -266,6 +267,11 @@ llm:
 researchclaw run --config config.yaml --topic "Your research idea" --auto-approve
 ```
 
+`acpx` itself must be on `PATH` (`npm install -g acpx`); `researchclaw doctor`
+now checks both the agent binary and the launcher. With `provider: "acp"` the
+reviewer and the debate panel reuse the same agent — no separate reviewer model
+is built for ACP runs.
+
 ### 🛠️ Other Ways to Run
 
 | Method | How |
@@ -273,6 +279,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 | **Standalone CLI** | `researchclaw run --topic "..." --auto-approve` (autonomous) or `--mode co-pilot` (collaborative) |
 | **Python API** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | Reads `RESEARCHCLAW_CLAUDE.md` — just say *"Run research on [topic]"* |
+| **pi** | Reads `AGENTS.md`; can also be the LLM backend via `llm.provider: acp` + `llm.acp.agent: "pi"` |
 | **Copilot CLI** | `researchclaw run --topic "..."` with `llm.acp.agent: "gh"` |
 | **OpenCode** | Reads `.claude/skills/` — same natural language interface |
 | **Any AI CLI** | Provide `RESEARCHCLAW_AGENTS.md` as context → agent auto-bootstraps |

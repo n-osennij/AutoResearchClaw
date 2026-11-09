@@ -79,6 +79,18 @@ llm:
   # primary_model: "llama3.2"
   # fallback_models:
   #   - "mistral"
+  # --- ACP: any coding CLI as the backend (needs `acpx` on PATH) ---
+  # The agent uses its own credentials, so no base_url / api_key here.
+  # `researchclaw doctor` checks both the agent binary and acpx.
+  # Caveat: with provider "acp" the reviewer and debate panel reuse this agent
+  # (no separate reviewer model is built).
+  # provider: "acp"
+  # acp:
+  #   agent: "pi"              # claude | codex | gh | opencode | pi
+  #   cwd: "."
+  #   session_name: "researchclaw"
+  #   max_turns: 1             # turns per prompt; 1 = plain text generation
+  #   timeout_sec: 1800        # per-prompt timeout
 
 literature_search:
   # Stage 4 academic search backends, tried in the order listed. All are free;
@@ -144,6 +156,18 @@ experiment:
   max_iterations: 10
   metric_key: "primary_metric"
   metric_direction: "minimize"
+  # Stages 10/13 code generation backend. Only these three are valid:
+  #   llm          — reuse the chat client (default)
+  #   claude_code  — Claude Code CLI (`claude -p`), needs ANTHROPIC_AUTH_TOKEN
+  #   codex        — OpenAI Codex CLI (`codex exec`), needs OPENAI_API_KEY
+  # An ACP provider (`llm.provider: acp`) already routes codegen through the
+  # agent, so leave this at "llm" in that case.
+  # cli_agent:
+  #   provider: "llm"
+  #   binary_path: ""          # auto-detected via PATH
+  #   model: ""                # CLI-specific model override
+  #   max_budget_usd: 5.0
+  #   timeout_sec: 600
   sandbox:
     # Use ".venv/Scripts/python.exe" on Windows
     python_path: ".venv/bin/python3"

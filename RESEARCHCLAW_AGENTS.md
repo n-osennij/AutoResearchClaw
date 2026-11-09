@@ -93,6 +93,7 @@ Run `researchclaw info -c config.yaml` to see the resolved values before guessin
 
 ResearchClaw works with:
 - **Claude Code**: Load via `.claude/skills/researchclaw/SKILL.md`
+- **pi**: Auto-loads `AGENTS.md` at the repo root; can also serve as the LLM backend (`llm.provider: acp`, `llm.acp.agent: "pi"`, needs `acpx` on PATH)
 - **OpenClaw**: Read this `AGENTS.md` + `README.md` for bootstrapping
 - **OpenCode**: Compatible skill format in `.claude/skills/`
 - **Standalone**: Direct CLI or Python API usage
