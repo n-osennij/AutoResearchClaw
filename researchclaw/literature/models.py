@@ -343,6 +343,20 @@ class Paper:
                 return tuple(str(v) for v in value if v)
             return ()
 
+        def _is_preprint(data: dict[str, object]) -> bool:
+            """``is_preprint`` with a fallback for rows cached before the field.
+
+            An arXiv record, or one whose venue is an arXiv category code, is a
+            preprint by construction; defaulting those to ``False`` let a cached
+            arXiv row outrank its published version in dedup.
+            """
+            if data.get("is_preprint") is not None:
+                return bool(data["is_preprint"])
+            return (
+                str(data.get("source") or "").casefold() == "arxiv"
+                or _is_arxiv_venue(_text(data.get("venue")))
+            )
+
         def _int(value: object) -> int:
             if isinstance(value, bool) or value is None:
                 return 0
@@ -378,7 +392,7 @@ class Paper:
             pdf_url=_text(data.get("pdf_url")),
             source=_text(data.get("source")),
             pmid=_text(data.get("pmid")),
-            is_preprint=bool(data.get("is_preprint", False)),
+            is_preprint=_is_preprint(data),
             pub_types=_strs(data.get("pub_types")),
             mesh_terms=_strs(data.get("mesh_terms")),
             retracted=bool(data.get("retracted", False)),

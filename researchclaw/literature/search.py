@@ -6,7 +6,7 @@ deduplicates by DOI → arXiv ID → fuzzy title match, and returns a merged
 list sorted by citation count (descending).
 
 Source priority: OpenAlex (most generous limits) → Semantic Scholar → arXiv;
-the remaining four are additive and opt-in via ``literature_search.sources``.
+the remaining five are additive and opt-in via ``literature_search.sources``.
 If any source hits rate limits, remaining sources compensate automatically.
 
 Public API
@@ -35,7 +35,11 @@ from researchclaw.literature.arxiv_client import search_arxiv
 from researchclaw.literature.core_client import search_core
 from researchclaw.literature.crossref_client import search_crossref
 from researchclaw.literature.europepmc_client import search_europepmc
-from researchclaw.literature.models import Paper, normalise_doi
+from researchclaw.literature.models import (
+    Paper,
+    _is_arxiv_venue,
+    normalise_doi,
+)
 from researchclaw.literature.openalex_client import search_openalex
 from researchclaw.literature.openreview_client import search_openreview
 from researchclaw.literature.pubmed_client import search_pubmed
@@ -172,11 +176,10 @@ _SOURCES: dict[str, _SourceSpec] = {
     "europepmc": _SourceSpec(
         "europepmc", "Europe PMC", _europepmc_adapter, 0.5
     ),
-    "europe_pmc": _SourceSpec(
-        "europepmc", "Europe PMC", _europepmc_adapter, 0.5
-    ),
     "core": _SourceSpec("core", "CORE", _core_adapter, 0.5),
 }
+# Shorthand people type in configs.
+_SOURCES["europe_pmc"] = _SOURCES["europepmc"]
 
 
 def normalise_source(name: str) -> str:
@@ -503,7 +506,20 @@ def _carry_metadata(old: Paper, new: Paper) -> Paper:
         )
     if old.pdf_url and not new.pdf_url:
         changes["pdf_url"] = old.pdf_url
-    return replace(merged, **changes) if changes else merged
+    # A thin winner (a journal stub from Crossref) must not erase what the
+    # loser knew: the DOI feeds the bibtex, the venue the Type column, the
+    # arXiv id a preprint link, and the citation count the ranking.
+    for field in ("doi", "venue", "arxiv_id", "url"):
+        if not getattr(new, field) and getattr(old, field):
+            changes[field] = getattr(old, field)
+    if old.citation_count > new.citation_count:
+        changes["citation_count"] = old.citation_count
+    merged = replace(merged, **changes) if changes else merged
+    # Merging a cited preprint with an uncited journal record produced an
+    # uncited entry that then ranked below unrelated papers.
+    if merged.citation_count != max(old.citation_count, new.citation_count):
+        merged = replace(merged, citation_count=max(old.citation_count, new.citation_count))
+    return merged
 
 
 def _prefer_published(kept: Paper, candidate: Paper) -> bool:
@@ -515,20 +531,32 @@ def _prefer_published(kept: Paper, candidate: Paper) -> bool:
     higher cited record wins (Semantic Scholar/OpenAlex data over thin
     source-only records).
     """
-    if kept.is_preprint and not candidate.is_preprint:
+    kept_pre = kept.is_preprint or _is_arxiv_venue(kept.venue)
+    cand_pre = candidate.is_preprint or _is_arxiv_venue(candidate.venue)
+    if kept_pre and not cand_pre:
         return True
-    if candidate.is_preprint and not kept.is_preprint:
+    if cand_pre and not kept_pre:
         return False
     return candidate.citation_count > kept.citation_count
+
+
+def _arxiv_key(arxiv_id: str) -> str:
+    """Identity key for an arXiv id: ``arXiv:2401.00001v3`` → ``2401.00001``."""
+    text = (arxiv_id or "").strip()
+    if text.lower().startswith("arxiv:"):
+        text = text.split(":", 1)[1].strip()
+    return re.sub(r"v\d+$", "", text)
 
 
 def _deduplicate(papers: list[Paper]) -> list[Paper]:
     """Remove duplicates.  Priority: DOI > arXiv ID > fuzzy title.
 
     Published records beat preprints (see :func:`_prefer_published`); between
-    two records of the same kind the more-cited one wins. The survivor's
-    identifiers are re-registered after every merge, so a third record that
-    only shares the *loser's* DOI/arXiv id still folds into the right entry.
+    two records of the same kind the more-cited one wins, and the survivor
+    keeps the loser's metadata (DOI, venue, arXiv id, citations). The
+    survivor's identifiers are re-registered after every merge, so a third
+    record that only shares the *loser's* DOI/arXiv id still folds into the
+    right entry.
     """
     seen_doi: dict[str, int] = {}
     seen_arxiv: dict[str, int] = {}
@@ -540,7 +568,7 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
         if p.doi:
             seen_doi[normalise_doi(p.doi)] = idx
         if p.arxiv_id:
-            seen_arxiv[p.arxiv_id.strip()] = idx
+            seen_arxiv[_arxiv_key(p.arxiv_id)] = idx
         norm = _canonical_title(p.title)
         if norm:
             seen_title[norm] = idx
@@ -581,7 +609,7 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
 
         # Check arXiv ID
         if not is_dup and paper.arxiv_id:
-            ax_key = paper.arxiv_id.strip()
+            ax_key = _arxiv_key(paper.arxiv_id)
             if ax_key in seen_arxiv:
                 idx = seen_arxiv[ax_key]
                 _merge_duplicate(idx, paper)
@@ -590,8 +618,14 @@ def _deduplicate(papers: list[Paper]) -> list[Paper]:
         # Check fuzzy title
         if not is_dup:
             norm = _canonical_title(paper.title)
-            if norm and norm in seen_title:
-                idx = seen_title[norm]
+            idx = seen_title.get(norm) if norm else None
+            if idx is not None and _canonical_title(result[idx].title) != norm:
+                # The entry was replaced by a different paper (two records
+                # shared a DOI but not a title); a title-only match against a
+                # different paper is not evidence that they are the same.
+                del seen_title[norm]
+                idx = None
+            if idx is not None:
                 _merge_duplicate(idx, paper)
                 is_dup = True
 

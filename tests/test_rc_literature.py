@@ -2293,3 +2293,119 @@ class TestStage4FallbackBibtex:
         from researchclaw.pipeline.stage_impls._literature import _entry_key
 
         assert _entry_key("no braces here") == ""
+
+
+class TestDedupIdentityRegression:
+    """The merge must not lose identifiers or swallow unrelated papers."""
+
+    def _dedupe(self, *papers: Paper) -> list[Paper]:
+        from researchclaw.literature.search import _deduplicate
+
+        return _deduplicate(list(papers))
+
+    def test_winner_doi_is_registered_after_a_merge(self) -> None:
+        """A third record carrying the *winner's* DOI must fold in, not
+        become a second copy."""
+        out = self._dedupe(
+            Paper(paper_id="a1", title="One", arxiv_id="2401.00001", citation_count=5),
+            Paper(
+                paper_id="a2",
+                title="One",
+                arxiv_id="2401.00001",
+                doi="10.1234/jmlr.1",
+                citation_count=50,
+            ),
+            Paper(paper_id="a3", title="Three", doi="10.1234/jmlr.1", citation_count=1),
+        )
+        assert len(out) == 1
+        assert out[0].doi == "10.1234/jmlr.1"
+
+    def test_title_index_does_not_swallow_an_unrelated_paper(self) -> None:
+        out = self._dedupe(
+            Paper(paper_id="q1", title="Alpha", doi="10.1/x", citation_count=10),
+            Paper(paper_id="q2", title="Beta", doi="10.1/x", citation_count=100),
+            Paper(paper_id="q3", title="Alpha", citation_count=0),
+        )
+        assert sorted(p.title for p in out) == ["Alpha", "Beta"]
+
+    def test_merge_backfills_metadata_from_the_loser(self) -> None:
+        out = self._dedupe(
+            Paper(
+                paper_id="c1",
+                title="Same",
+                doi="10.1101/x",
+                venue="bioRxiv",
+                is_preprint=True,
+                pdf_url="http://p.pdf",
+                arxiv_id="2401.55555",
+                citation_count=30,
+                mesh_terms=("Genes",),
+            ),
+            Paper(paper_id="c2", title="Same", doi="10.1101/x", venue="", citation_count=0),
+        )
+        paper = out[0]
+        assert paper.venue == "bioRxiv"
+        assert paper.arxiv_id == "2401.55555"
+        assert paper.pdf_url == "http://p.pdf"
+        assert paper.citation_count == 30
+
+    def test_merged_entry_keeps_the_cited_count(self) -> None:
+        """A thin journal stub replacing a cited preprint used to end up with
+        zero citations and sink below unrelated papers in the ranking."""
+        out = self._dedupe(
+            Paper(paper_id="pre", title="Same", doi="10.1/y", is_preprint=True, citation_count=30),
+            Paper(paper_id="pub", title="Same", doi="10.1/y", citation_count=0),
+            Paper(paper_id="other", title="Other", citation_count=5),
+        )
+        merged = next(p for p in out if p.title == "Same")
+        assert merged.citation_count == 30
+
+    def test_arxiv_record_is_a_preprint(self) -> None:
+        from researchclaw.literature.arxiv_client import _convert_result
+
+        class _Res:
+            entry_id = "http://arxiv.org/abs/2401.00001v2"
+            title = "A preprint"
+            authors = ()
+            published = None
+            doi = ""
+            primary_category = "cs.LG"
+            summary = "abstract"
+
+        assert _convert_result(_Res()).is_preprint is True
+
+    def test_arxiv_versions_are_one_paper(self) -> None:
+        out = self._dedupe(
+            Paper(paper_id="v1", title="T4", arxiv_id="2401.00001"),
+            Paper(paper_id="v2", title="Totally different", arxiv_id="2401.00001v2"),
+        )
+        assert len(out) == 1
+
+    def test_journal_version_beats_a_cited_arxiv_row(self) -> None:
+        out = self._dedupe(
+            Paper(
+                paper_id="j",
+                title="T3",
+                doi="10.1038/nature1",
+                venue="Nature",
+                pdf_url="p",
+                citation_count=20,
+            ),
+            Paper(paper_id="ax", title="T3", arxiv_id="2401.1", venue="cs.LG", citation_count=300),
+        )
+        assert out[0].paper_id == "j"
+        assert out[0].venue == "Nature"
+
+    def test_cached_arxiv_row_is_read_as_a_preprint(self) -> None:
+        legacy = {
+            "paper_id": "arxiv-1",
+            "title": "T",
+            "source": "arxiv",
+            "venue": "cs.LG",
+            "citation_count": 500,
+        }
+        assert Paper.from_dict(legacy).is_preprint is True
+        assert (
+            Paper.from_dict({**legacy, "source": "openalex", "venue": "Nature"}).is_preprint
+            is False
+        )

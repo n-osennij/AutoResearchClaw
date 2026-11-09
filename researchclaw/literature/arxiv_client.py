@@ -371,4 +371,7 @@ def _convert_result(result: arxiv.Result) -> Paper:
         url=url,
         pdf_url=f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else "",
         source="arxiv",
+        # Every record here is a preprint; without the flag a 3000-citation
+        # arXiv entry beats its published version in dedup.
+        is_preprint=True,
     )
