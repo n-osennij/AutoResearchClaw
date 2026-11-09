@@ -597,9 +597,7 @@ def _execute_literature_collect(
     try:
         from researchclaw.literature.search import (
             SourceKeys,
-            normalise_source,
             search_papers_multi_query,
-            papers_to_bibtex,
         )
 
         # Expand queries for broader coverage

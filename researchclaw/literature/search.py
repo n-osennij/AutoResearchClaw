@@ -35,7 +35,7 @@ from researchclaw.literature.arxiv_client import search_arxiv
 from researchclaw.literature.core_client import search_core
 from researchclaw.literature.crossref_client import search_crossref
 from researchclaw.literature.europepmc_client import search_europepmc
-from researchclaw.literature.models import Author, Paper, normalise_doi
+from researchclaw.literature.models import Paper, normalise_doi
 from researchclaw.literature.openalex_client import search_openalex
 from researchclaw.literature.openreview_client import search_openreview
 from researchclaw.literature.pubmed_client import search_pubmed
