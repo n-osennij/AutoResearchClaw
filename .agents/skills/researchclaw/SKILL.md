@@ -40,7 +40,8 @@ The knobs that actually matter:
 | Knob | Notes |
 |---|---|
 | `research.topic` / `research.domains` | topic text; domains drive search and domain detection |
-| `research.min_year` | publication-year floor, default **2020**. `0` = no cutoff (needed for pre-2020 foundations) |
+| `research.min_year` | publication-year floor for the primary pass, default **2020**. `0` = no cutoff (hybrid then turns off) |
+| `research.hybrid_search` / `foundational_results_per_query` / `foundational_max_papers` | second pass without the floor for older foundations (default on, 10/source, cap 40); papers arrive tagged `year_band="foundational"` |
 | `llm.provider` + `base_url` + `api_key_env` + `primary_model` | OpenAI-compatible. Presets: openai, openrouter, deepseek, atlascloud, anthropic, kimi-anthropic, minimax*, novita, ollama |
 | `llm.extra_headers` | Headers on every request and doctor probe. `auto` → per-client session id |
 | `llm.reviewer_model` / `fallback_models` | optional second opinion and fallback chain |
@@ -160,12 +161,17 @@ to cite.
   the model returns fewer; an empty model verdict pauses the stage).
 - **Knowledge cards:** Stage 6 asks for one card per shortlisted paper; the
   template fallback (used when the model returns nothing) takes 6.
-- **Year:** `research.min_year`, default 2020 (see above). Only 31 curated
-  classics (`researchclaw/data/seminal_papers.yaml`) are injected regardless.
-  The literature cache key is `(query, source, limit)` — **`min_year` is not
-  part of it**, so after lowering the cutoff old cached hits can still come
-  back until the entry expires (24 h arXiv, 3 days OpenAlex/S2, 7 days the
-  rest). Delete `.researchclaw_cache/literature/` to force fresh searches.
+- **Year:** `research.min_year` (default 2020) caps the primary pass;
+  `research.hybrid_search` adds a second, unfiltered pass for older work, capped
+  at 40 papers and tagged `year_band="foundational"`. The screener is told to
+  keep foundations only when they define the problem/metric/baseline, so recent
+  work is not crowded out. 31 curated classics
+  (`researchclaw/data/seminal_papers.yaml`) are injected regardless.
+  The cache key includes `min_year` (and entries are written with the policy),
+  so changing the year policy cannot resurrect old hits. Stage 4 still warns
+  when the cache was filled under a different policy or predates trackage, and
+  `doctor` reports `literature_cache`; delete `.researchclaw_cache/literature/`
+  to reclaim space or force fresh searches.
 - **Web layer:** 10 web results, 10 scholar results, 5 crawled pages, up to 5
   PDFs per run.
 

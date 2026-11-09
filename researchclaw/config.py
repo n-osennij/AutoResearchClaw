@@ -149,6 +149,15 @@ class ResearchConfig:
     #: filter, which is what you want for topics whose foundations predate 2020
     #: (Transformer 2017, Adam 2014 ...). Applied by every Stage-4 backend.
     min_year: int = 2020
+    #: Two-pass Stage 4: the capped pass above plus a second, unfiltered pass
+    #: that recovers foundational papers older than ``min_year``. The year
+    #: filter changes what each backend returns, so the unfiltered pass finds
+    #: classics the filtered ranking pushed out.
+    hybrid_search: bool = True
+    #: Results per source per query for the foundational pass.
+    foundational_results_per_query: int = 10
+    #: Hard cap on foundational papers added to a run (sorted by citations).
+    foundational_max_papers: int = 40
 
 
 @dataclass(frozen=True)
@@ -993,6 +1002,13 @@ class RCConfig:
                 quality_threshold=float(research.get("quality_threshold", 0.0)),
                 graceful_degradation=bool(research.get("graceful_degradation", True)),
                 min_year=int(research.get("min_year", 2020)),
+                hybrid_search=bool(research.get("hybrid_search", True)),
+                foundational_results_per_query=int(
+                    research.get("foundational_results_per_query", 10)
+                ),
+                foundational_max_papers=int(
+                    research.get("foundational_max_papers", 40)
+                ),
             ),
             runtime=RuntimeConfig(
                 timezone=runtime["timezone"],
@@ -1189,6 +1205,22 @@ def validate_config(
                     "Invalid research.min_year: "
                     f"{parsed_year} (use 0 for no cutoff)"
                 )
+
+    hybrid_search = _get_by_path(data, "research.hybrid_search")
+    if hybrid_search is not None and not isinstance(hybrid_search, bool):
+        errors.append("research.hybrid_search must be true or false")
+
+    for field in ("foundational_results_per_query", "foundational_max_papers"):
+        raw = _get_by_path(data, f"research.{field}")
+        if raw is None or _is_blank(raw):
+            continue
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            errors.append(f"Invalid research.{field}: {raw}")
+            continue
+        if parsed < 0:
+            errors.append(f"Invalid research.{field}: {parsed} (must be >= 0)")
 
     exp_mode = _get_by_path(data, "experiment.mode")
     if not _is_blank(exp_mode) and exp_mode not in EXPERIMENT_MODES:

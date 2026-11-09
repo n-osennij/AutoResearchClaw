@@ -1,8 +1,15 @@
 """Local query cache for literature search results.
 
-Caches search results by (query, source, limit) hash to avoid
-redundant API calls. Cache entries expire after TTL_SEC seconds.
-Cache directory: .researchclaw_cache/literature/
+Cache entries are keyed by ``(query, source, limit, year_min)`` so results
+fetched under one publication-year policy are never served under another —
+``min_year`` changes what each source returns, and a cache hit that ignores it
+would silently resurrect the old policy. Entries expire per source (24 h arXiv,
+3 days OpenAlex/S2, 7 days the rest).
+
+The directory also carries ``.policy.json``, the policy that filled it, so the
+pipeline and ``researchclaw doctor`` can warn when a run's policy differs from
+the cached one, or when entries predate policy tracking entirely.
+Cache directory: ``.researchclaw_cache/literature/``.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = Path(".researchclaw_cache") / "literature"
+_POLICY_FILE = ".policy.json"
 _TTL_SEC = 86400 * 7  # 7 days (default for S2, OpenAlex)
 
 # Per-source TTLs: arXiv updates daily at midnight, so 24h cache is optimal.
@@ -35,9 +43,11 @@ def _cache_dir(base: Path | None = None) -> Path:
     return d
 
 
-def cache_key(query: str, source: str, limit: int) -> str:
-    """Deterministic cache key from query parameters."""
-    raw = f"{query.strip().lower()}|{source.strip().lower()}|{limit}"
+def cache_key(query: str, source: str, limit: int, year_min: int = 0) -> str:
+    """Deterministic cache key from the query and its year policy."""
+    raw = (
+        f"{query.strip().lower()}|{source.strip().lower()}|{limit}|y{int(year_min)}"
+    )
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -45,6 +55,7 @@ def get_cached(
     query: str,
     source: str,
     limit: int,
+    year_min: int = 0,
     *,
     cache_base: Path | None = None,
     ttl: float | None = None,
@@ -55,7 +66,7 @@ def get_cached(
     ``_SOURCE_TTL``, falling back to the global ``_TTL_SEC``.
     """
     d = _cache_dir(cache_base)
-    key = cache_key(query, source, limit)
+    key = cache_key(query, source, limit, year_min)
     path = d / f"{key}.json"
 
     if not path.exists():
@@ -76,8 +87,8 @@ def get_cached(
             return None
         age_str = _format_age(age_sec)
         logger.info(
-            "[cache] HIT query=%r source=%s age=%s (%d papers)",
-            query[:50], source, age_str, len(papers),
+            "[cache] HIT query=%r source=%s year_min=%d age=%s (%d papers)",
+            query[:50], source, int(year_min), age_str, len(papers),
         )
         return papers
     except (json.JSONDecodeError, TypeError, ValueError):
@@ -100,23 +111,111 @@ def put_cache(
     source: str,
     limit: int,
     papers: list[dict[str, Any]],
+    year_min: int = 0,
     *,
     cache_base: Path | None = None,
 ) -> None:
     """Write search results to cache."""
     d = _cache_dir(cache_base)
-    key = cache_key(query, source, limit)
+    key = cache_key(query, source, limit, year_min)
     path = d / f"{key}.json"
 
     payload = {
         "query": query,
         "source": source,
         "limit": limit,
+        "year_min": int(year_min),
         "timestamp": time.time(),
         "papers": papers,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.debug("Cached %d papers for key %s", len(papers), key)
+
+
+# ---------------------------------------------------------------------------
+# Year-policy tracking
+# ---------------------------------------------------------------------------
+
+
+def inspect_search_policy(
+    *,
+    min_year: int,
+    hybrid: bool,
+    cache_base: Path | None = None,
+) -> dict[str, Any]:
+    """Describe the cache relative to the policy that would fill it now.
+
+    Read-only: does not create the directory, so ``doctor`` stays a no-op on a
+    clean checkout.
+
+    Returns keys: ``cache_dir``, ``exists``, ``entries``, ``policy`` (the
+    recorded policy or None), ``matches`` (recorded policy equals the current
+    one) and ``legacy_entries`` (entries exist but no policy was ever recorded,
+    i.e. they predate policy tracking).
+    """
+    d = cache_base or _DEFAULT_CACHE_DIR
+    entries = 0
+    policy: dict[str, Any] | None = None
+    if d.is_dir():
+        entries = sum(
+            1
+            for path in d.glob("*.json")
+            if path.name != _POLICY_FILE and path.is_file()
+        )
+        policy_path = d / _POLICY_FILE
+        if policy_path.is_file():
+            try:
+                raw = json.loads(policy_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    policy = raw
+            except (OSError, json.JSONDecodeError):
+                policy = None
+
+    matches = bool(
+        policy
+        and int(policy.get("min_year", -1)) == int(min_year)
+        and bool(policy.get("hybrid", False)) == bool(hybrid)
+    )
+    return {
+        "cache_dir": str(d),
+        "exists": d.is_dir(),
+        "entries": entries,
+        "policy": policy,
+        "matches": matches,
+        "legacy_entries": entries > 0 and policy is None,
+    }
+
+
+def note_search_policy(
+    *,
+    min_year: int,
+    hybrid: bool,
+    cache_base: Path | None = None,
+) -> dict[str, Any]:
+    """Record the current policy and report what the cache held before.
+
+    Returns the :func:`inspect_search_policy` snapshot taken **before** the
+    policy file was written, plus ``previous`` (the policy that filled the
+    cache) so the caller can warn about a policy switch.
+    """
+    snapshot = inspect_search_policy(
+        min_year=min_year, hybrid=hybrid, cache_base=cache_base
+    )
+    d = _cache_dir(cache_base)
+    policy_path = d / _POLICY_FILE
+    policy_path.write_text(
+        json.dumps(
+            {
+                "min_year": int(min_year),
+                "hybrid": bool(hybrid),
+                "updated_at": time.time(),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    snapshot["previous"] = snapshot.get("policy")
+    return snapshot
 
 
 def clear_cache(*, cache_base: Path | None = None) -> int:
@@ -130,9 +229,9 @@ def clear_cache(*, cache_base: Path | None = None) -> int:
 
 
 def cache_stats(*, cache_base: Path | None = None) -> dict[str, Any]:
-    """Return cache statistics."""
+    """Return cache statistics (policy file excluded from the entry count)."""
     d = _cache_dir(cache_base)
-    files = list(d.glob("*.json"))
+    files = [f for f in d.glob("*.json") if f.name != _POLICY_FILE]
     total_bytes = sum(f.stat().st_size for f in files)
     return {
         "entries": len(files),

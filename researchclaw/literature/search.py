@@ -163,8 +163,8 @@ def _normalise_source(name: str) -> str:
     return name.lower().replace("-", "_").replace(" ", "_")
 
 
-CacheGet = Callable[[str, str, int], list[dict[str, object]] | None]
-CachePut = Callable[[str, str, int, list[dict[str, object]]], None]
+CacheGet = Callable[[str, str, int, int], list[dict[str, object]] | None]
+CachePut = Callable[[str, str, int, list[dict[str, object]], int], None]
 
 
 def _cache_api() -> tuple[CacheGet, CachePut]:
@@ -280,7 +280,7 @@ def search_papers(
         try:
             papers = spec.adapter(query, limit, year_min, keys)
             all_papers.extend(papers)
-            cache_put(query, spec.name, limit, _papers_to_dicts(papers))
+            cache_put(query, spec.name, limit, _papers_to_dicts(papers), year_min)
             source_stats[spec.name] = len(papers)
             logger.info(
                 "%s returned %d papers for %r", spec.label, len(papers), query
@@ -298,7 +298,7 @@ def search_papers(
             logger.warning(
                 "[rate-limit] Source %s failed for %r — trying cache", src, query
             )
-            cached = cache_get(query, spec.name, limit)
+            cached = cache_get(query, spec.name, limit, year_min)
             if cached:
                 papers = _dicts_to_papers(cached)
                 all_papers.extend(papers)

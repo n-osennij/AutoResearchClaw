@@ -195,8 +195,14 @@ extractor when `web_search.enable_pdf_extraction` is on (needs
 `stage-04/web_context.md`. `inter_query_delay_sec` paces queries, per-source
 pacing (1 req/s for S2 and OpenReview) is built in.
 
-`research.min_year` (default 2020) is the publication-year floor applied by every
-source; set it to `0` for topics whose foundations predate 2020. Screening then
+`research.min_year` (default 2020) is the publication-year floor for the primary
+pass; set it to `0` for no cutoff. `research.hybrid_search` (on by default) adds
+a second pass without the floor so older foundations are not lost: pre-floor
+papers are deduplicated, capped at `foundational_max_papers` (40) and tagged
+`year_band="foundational"`, and the screener keeps them only when they define
+the problem/metric/baseline. The literature cache is keyed by `min_year`, and
+both Stage 4 and `doctor` warn when cached entries were filled under another
+year policy. Screening then
 keeps the best ~15 papers and Stage 6 turns the shortlist into knowledge cards
 (one per paper; the template fallback uses 6). The screening budget itself is
 configurable: `literature_search.max_screen_chars` (100 000 by default),

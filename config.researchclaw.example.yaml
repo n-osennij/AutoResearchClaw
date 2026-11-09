@@ -8,10 +8,24 @@ research:
     - "machine-learning"
   daily_paper_count: 10
   quality_threshold: 4.0
-  # Earliest publication year Stage 4 will accept (default 2020). Set to 0 for
-  # no cutoff — needed for topics whose foundations are older (Transformer 2017,
-  # Adam 2014 ...). Applied by every literature source.
+  # Earliest publication year the *primary* Stage-4 pass accepts (default 2020).
+  # Applied by every literature source, so without the hybrid pass below a
+  # pre-2020 classic (Transformer 2017, Adam 2014, ResNet 2015) is invisible.
+  # Set to 0 to drop the floor entirely (hybrid then turns itself off).
   min_year: 2020
+  # Hybrid search: a second Stage-4 pass *without* the year floor recovers the
+  # foundational papers the filtered ranking pushed out. Only papers older than
+  # min_year are kept, deduplicated against the first pass, sorted by citations
+  # and capped, then tagged year_band="foundational" so the screener can weigh
+  # them (it is told to keep them only when they define the problem/metric/
+  # baseline). Costs one extra search over the base queries — roughly +25-50%
+  # of Stage-4 wall time. Automatically off when min_year is 0.
+  hybrid_search: true
+  # Results per source per query for the foundational pass (primary uses
+  # literature_search.max_results_per_query, default 40).
+  foundational_results_per_query: 10
+  # Hard cap on foundational papers added per run (highest-cited first).
+  foundational_max_papers: 40
 
 runtime:
   timezone: "America/New_York"

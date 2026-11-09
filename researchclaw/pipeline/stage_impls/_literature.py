@@ -79,6 +79,18 @@ def _expand_search_queries(queries: list[str], topic: str) -> list[str]:
     return expanded
 
 
+def _paper_identity(paper: Any) -> str:
+    """Stable identity for cross-pass deduplication (DOI > arXiv > title)."""
+    doi = str(getattr(paper, "doi", "") or "").strip().lower()
+    if doi:
+        return f"doi:{doi}"
+    arxiv_id = str(getattr(paper, "arxiv_id", "") or "").strip()
+    if arxiv_id:
+        return f"arxiv:{arxiv_id}"
+    title = " ".join(str(getattr(paper, "title", "") or "").lower().split())
+    return f"title:{title}"
+
+
 # ---------------------------------------------------------------------------
 # Stage executors
 # ---------------------------------------------------------------------------
@@ -435,6 +447,9 @@ def _execute_literature_collect(
     candidates: list[dict[str, Any]] = []
     bibtex_entries: list[str] = []
     real_search_succeeded = False
+    foundational_papers: list[Any] = []
+    hybrid_enabled = False
+    cache_state: dict[str, Any] = {}
 
     try:
         from researchclaw.literature.search import (
@@ -484,20 +499,113 @@ def _execute_literature_collect(
                 year_min,
                 year_min,
             )
+        search_keys = SourceKeys(
+            s2_api_key=s2_api_key,
+            openalex_email=literature_config.openalex_email,
+            openalex_api_key=openalex_api_key,
+            pubmed_api_key=pubmed_api_key,
+            core_api_key=core_api_key,
+        )
+        hybrid_enabled = (
+            bool(getattr(config.research, "hybrid_search", False)) and year_min > 0
+        )
+
+        # The cache is keyed by the year policy too; if the policy changed since
+        # it was filled, say so instead of silently mixing results.
+        try:
+            from researchclaw.literature.cache import note_search_policy
+
+            cache_state = note_search_policy(
+                min_year=year_min, hybrid=hybrid_enabled
+            )
+            previous = cache_state.get("previous")
+            if previous and (
+                int(previous.get("min_year", -1)) != year_min
+                or bool(previous.get("hybrid", False)) != hybrid_enabled
+            ):
+                logger.warning(
+                    "[literature] Literature cache was filled under a different "
+                    "year policy (min_year=%s, hybrid=%s); those entries are not "
+                    "reused. Delete %s to reclaim space.",
+                    previous.get("min_year"),
+                    previous.get("hybrid"),
+                    cache_state.get("cache_dir"),
+                )
+            if cache_state.get("legacy_entries"):
+                logger.warning(
+                    "[literature] %d cache entries predate year-policy tracking "
+                    "and are no longer reused. Delete %s to reclaim space.",
+                    cache_state.get("entries", 0),
+                    cache_state.get("cache_dir"),
+                )
+        except Exception:  # noqa: BLE001 - cache policy must never block a run
+            logger.debug("Cache policy check skipped", exc_info=True)
+
         papers = search_papers_multi_query(
             expanded_queries,
             limit_per_query=literature_config.max_results_per_query,
             sources=sources,
             year_min=year_min,
-            keys=SourceKeys(
-                s2_api_key=s2_api_key,
-                openalex_email=literature_config.openalex_email,
-                openalex_api_key=openalex_api_key,
-                pubmed_api_key=pubmed_api_key,
-                core_api_key=core_api_key,
-            ),
+            keys=search_keys,
             inter_query_delay=literature_config.inter_query_delay_sec,
         )
+
+        if hybrid_enabled:
+            # Second pass without the year floor: it recovers the foundational
+            # papers the filtered ranking pushed out. Only papers older than the
+            # floor are kept, capped and sorted by citations, so the recent
+            # cohort is not crowded out.
+            try:
+                found_limit = max(
+                    1,
+                    int(
+                        getattr(
+                            config.research, "foundational_results_per_query", 10
+                        )
+                    ),
+                )
+                found_cap = max(
+                    0, int(getattr(config.research, "foundational_max_papers", 40))
+                )
+                logger.info(
+                    "[literature] Hybrid foundational pass: %d queries without "
+                    "the year filter (limit %d/source, cap %d papers)",
+                    len(queries),
+                    found_limit,
+                    found_cap,
+                )
+                older = search_papers_multi_query(
+                    queries or expanded_queries,
+                    limit_per_query=found_limit,
+                    sources=sources,
+                    year_min=0,
+                    keys=search_keys,
+                    inter_query_delay=literature_config.inter_query_delay_sec,
+                )
+                seen = {_paper_identity(paper) for paper in papers}
+                for paper in older:
+                    if len(foundational_papers) >= found_cap:
+                        break
+                    if not paper.year or paper.year >= year_min:
+                        continue
+                    ident = _paper_identity(paper)
+                    if ident in seen:
+                        continue
+                    seen.add(ident)
+                    foundational_papers.append(paper)
+                papers = papers + foundational_papers
+                logger.info(
+                    "[literature] Hybrid pass added %d foundational papers "
+                    "(published before %d)",
+                    len(foundational_papers),
+                    year_min,
+                )
+            except Exception:  # noqa: BLE001 - keep the primary results
+                logger.warning(
+                    "Hybrid foundational pass failed — continuing with the "
+                    "primary search results",
+                    exc_info=True,
+                )
         if papers:
             real_search_succeeded = True
             # Count by source
@@ -505,6 +613,12 @@ def _execute_literature_collect(
             for p in papers:
                 src_counts[p.source] = src_counts.get(p.source, 0) + 1
                 d = p.to_dict()
+                if year_min > 0 and p.year and p.year < year_min:
+                    d["year_band"] = "foundational"
+                elif year_min > 0:
+                    d["year_band"] = "recent"
+                else:
+                    d["year_band"] = "all"
                 d["collected_at"] = _utcnow_iso()
                 candidates.append(d)
                 bibtex_entries.append(p.to_bibtex())
@@ -537,6 +651,7 @@ def _execute_literature_collect(
                         "authors": [{"name": sp.get("authors", "")}],
                         "cite_key": sp.get("cite_key", ""),
                         "venue": sp.get("venue", ""),
+                        "year_band": "foundational",
                         "collected_at": _utcnow_iso(),
                     })
                     _injected += 1
@@ -728,6 +843,18 @@ def _execute_literature_collect(
                         if year_min > 0
                         else "no publication-year cutoff"
                     ),
+                },
+                "hybrid_search": {
+                    "enabled": hybrid_enabled,
+                    "foundational_added": len(foundational_papers),
+                    "foundational_max_papers": int(
+                        getattr(config.research, "foundational_max_papers", 40)
+                    ),
+                },
+                "cache": {
+                    "dir": cache_state.get("cache_dir", ""),
+                    "previous_policy": cache_state.get("previous"),
+                    "legacy_entries": cache_state.get("legacy_entries", False),
                 },
                 "total_candidates": len(candidates),
                 "bibtex_entries": len(bibtex_entries),

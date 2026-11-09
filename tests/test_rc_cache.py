@@ -170,3 +170,40 @@ class TestSearchDegradation:
         cached = get_cached("test", "semantic_scholar", 20, cache_base=tmp_path)
         assert cached is not None
         assert cached[0]["paper_id"] == "s2-test"
+
+
+class TestCacheYearPolicy:
+    def test_cache_key_includes_year(self, tmp_path):
+        papers = [{"title": "x"}]
+        put_cache("q", "openalex", 5, papers, 2020, cache_base=tmp_path)
+        assert get_cached("q", "openalex", 5, 2020, cache_base=tmp_path) == papers
+        # same query under a different year policy must miss
+        assert get_cached("q", "openalex", 5, 0, cache_base=tmp_path) is None
+        assert get_cached("q", "openalex", 5, cache_base=tmp_path) is None
+
+    def test_note_search_policy_tracks_changes(self, tmp_path):
+        from researchclaw.literature.cache import (
+            inspect_search_policy,
+            note_search_policy,
+        )
+
+        first = note_search_policy(min_year=2020, hybrid=True, cache_base=tmp_path)
+        assert first["previous"] is None
+        assert first["legacy_entries"] is False
+
+        second = note_search_policy(min_year=0, hybrid=False, cache_base=tmp_path)
+        assert second["previous"]["min_year"] == 2020
+        assert second["previous"]["hybrid"] is True
+
+        info = inspect_search_policy(min_year=0, hybrid=False, cache_base=tmp_path)
+        assert info["matches"] is True
+        assert info["policy"]["min_year"] == 0
+
+    def test_inspect_detects_legacy_entries(self, tmp_path):
+        from researchclaw.literature.cache import inspect_search_policy
+
+        put_cache("q", "openalex", 5, [{"title": "old"}], cache_base=tmp_path)
+        info = inspect_search_policy(min_year=2020, hybrid=True, cache_base=tmp_path)
+        assert info["legacy_entries"] is True
+        assert info["matches"] is False
+        assert info["entries"] == 1

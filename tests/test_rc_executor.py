@@ -2036,8 +2036,12 @@ class TestLiteratureCollectConfiguration:
         from researchclaw.literature.models import Paper
 
         def fake_search(queries: list[str], **kwargs: object) -> list[Paper]:
-            captured["queries"] = queries
-            captured.update(kwargs)
+            # Hybrid search makes two passes; keep the first (primary) one for
+            # the assertions and record every call for the hybrid tests.
+            captured.setdefault("calls", []).append({"queries": queries, **kwargs})
+            if "queries" not in captured:
+                captured["queries"] = queries
+                captured.update(kwargs)
             return [
                 Paper(
                     paper_id="openalex-W123",

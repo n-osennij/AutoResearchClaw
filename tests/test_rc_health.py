@@ -470,7 +470,7 @@ def test_run_doctor_all_pass_openai(tmp_path: Path) -> None:
     ):
         report = health.run_doctor(config_path)
     assert report.overall == "pass"
-    assert len(report.checks) == 10
+    assert len(report.checks) == 11
 
 
 def test_run_doctor_with_failures(tmp_path: Path) -> None:
@@ -636,6 +636,61 @@ def test_check_min_year_passes_when_disabled() -> None:
     assert "No publication-year cutoff" in result.detail
 
 
+def test_check_literature_cache_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "researchclaw.literature.cache._DEFAULT_CACHE_DIR",
+        Path("/nonexistent-cache-dir"),
+    )
+    result = health.check_literature_cache(2020, True)
+    assert result.status == "pass"
+    assert "empty or absent" in result.detail
+
+
+def test_check_literature_cache_warns_on_policy_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from researchclaw.literature.cache import note_search_policy, put_cache
+
+    monkeypatch.setattr(
+        "researchclaw.literature.cache._DEFAULT_CACHE_DIR", tmp_path / "cache"
+    )
+    note_search_policy(min_year=2020, hybrid=True)
+    put_cache("q", "openalex", 5, [{"title": "x"}], 2020)
+    result = health.check_literature_cache(0, False)
+    assert result.status == "warn"
+    assert "min_year=2020" in result.detail
+    assert "min_year=0" in result.detail
+
+
+def test_check_literature_cache_warns_on_legacy_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from researchclaw.literature.cache import put_cache
+
+    monkeypatch.setattr(
+        "researchclaw.literature.cache._DEFAULT_CACHE_DIR", tmp_path / "cache"
+    )
+    put_cache("q", "openalex", 5, [{"title": "x"}])
+    result = health.check_literature_cache(2020, True)
+    assert result.status == "warn"
+    assert "predate year-policy tracking" in result.detail
+
+
+def test_check_literature_cache_passes_on_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from researchclaw.literature.cache import note_search_policy, put_cache
+
+    monkeypatch.setattr(
+        "researchclaw.literature.cache._DEFAULT_CACHE_DIR", tmp_path / "cache"
+    )
+    note_search_policy(min_year=2020, hybrid=True)
+    put_cache("q", "openalex", 5, [{"title": "x"}], 2020)
+    result = health.check_literature_cache(2020, True)
+    assert result.status == "pass"
+    assert "match the current year policy" in result.detail
+
+
 def test_check_acpx_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("researchclaw.llm.acp_client.find_acpx", lambda: None)
     result = health.check_acpx()
@@ -760,7 +815,7 @@ def test_run_doctor_acp_includes_agent_check(tmp_path: Path) -> None:
     check_names = [c.name for c in report.checks]
     assert "acp_agent" in check_names
     assert report.overall == "pass"
-    assert len(report.checks) == 9
+    assert len(report.checks) == 10
 
 
 def test_print_doctor_report_ascii_fallback(monkeypatch: pytest.MonkeyPatch) -> None:

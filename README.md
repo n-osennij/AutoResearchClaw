@@ -617,7 +617,10 @@ research:
   domains: ["ml", "nlp"]           # Research domains for literature search
   daily_paper_count: 8             # Target papers per search query
   quality_threshold: 4.0           # Minimum quality score for papers
-  min_year: 2020                   # Earliest publication year for Stage 4 (0 = no cutoff)
+  min_year: 2020                   # Earliest publication year for the primary Stage-4 pass (0 = no cutoff)
+  hybrid_search: true              # + second pass without the floor for older foundations
+  foundational_results_per_query: 10  # Results per source per query in that pass
+  foundational_max_papers: 40      # Cap on foundational papers added per run
 
 # === Runtime ===
 runtime:
@@ -819,10 +822,18 @@ names are skipped). Keys go inline (`*_api_key`) or into the env var named by
 | `pubmed` | MEDLINE | `NCBI_API_KEY` optional — raises 3 → 10 req/s |
 | `core` | open-access full text | `CORE_API_KEY` **required** (free at <https://core.ac.uk/services/api>) |
 
-`research.min_year` (default 2020) is the publication-year floor every source
-applies; `0` disables it so classic pre-2020 work (Transformer, Adam, ResNet) is
-searchable again. While a floor is active, `researchclaw doctor` warns about it
-and Stage 4 logs it plus writes `year_filter` into `stage-04/search_meta.json`.
+`research.min_year` (default 2020) is the publication-year floor the primary
+Stage-4 pass applies (`0` disables it). Because the floor changes what each
+backend returns, `research.hybrid_search` (default on) runs a **second pass
+without the floor** over the base queries, keeps only papers older than the
+floor, deduplicates them against the first pass, sorts by citations and caps
+them at `foundational_max_papers`. They are tagged `year_band="foundational"`,
+and the screening prompt keeps such a paper only when it defines the problem,
+a metric or a baseline — so classics and fresh work coexist instead of one
+crowding out the other. The second pass costs ~25–50% extra Stage-4 wall time
+and turns itself off when `min_year` is 0.
+`researchclaw doctor` reminds about the active year floor, and Stage 4 logs it
+plus writes `year_filter` / `hybrid_search` into `stage-04/search_meta.json`.
 Screening budget is configurable too. Stage 4 may collect 600–900 unique papers
 but the screener only sees what fits: `max_screen_chars` caps the blob,
 `max_abstract_chars` truncates each abstract first, `min_shortlist` is the

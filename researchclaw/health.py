@@ -736,6 +736,53 @@ def check_min_year(min_year: int) -> CheckResult:
     )
 
 
+def check_literature_cache(min_year: int, hybrid: bool) -> CheckResult:
+    """Warn when the on-disk literature cache was filled under another policy.
+
+    Cache keys include ``min_year`` now, so old entries are never served under
+    a new policy — but they still occupy disk and are worth clearing, and a
+    legacy cache from before policy tracking deserves a note either way.
+    """
+    from researchclaw.literature.cache import inspect_search_policy
+
+    info = inspect_search_policy(min_year=min_year, hybrid=hybrid)
+    if not info["entries"]:
+        return CheckResult(
+            name="literature_cache",
+            status="pass",
+            detail="Literature cache is empty or absent",
+        )
+    if info["legacy_entries"]:
+        return CheckResult(
+            name="literature_cache",
+            status="warn",
+            detail=(
+                f"{info['entries']} cache entries predate year-policy tracking "
+                "and are no longer reused"
+            ),
+            fix=f"Delete {info['cache_dir']} to reclaim space",
+        )
+    if not info["matches"]:
+        policy = info["policy"] or {}
+        return CheckResult(
+            name="literature_cache",
+            status="warn",
+            detail=(
+                f"Cache was filled under min_year={policy.get('min_year')} "
+                f"hybrid={policy.get('hybrid')}, current run uses "
+                f"min_year={min_year} hybrid={hybrid} — old entries are not reused"
+            ),
+            fix=f"Delete {info['cache_dir']} for a clean search",
+        )
+    return CheckResult(
+        name="literature_cache",
+        status="pass",
+        detail=(
+            f"{info['entries']} cache entries match the current year policy"
+        ),
+    )
+
+
 def check_acpx() -> CheckResult:
     """Check that the ACP launcher (``acpx``) is installed.
 
@@ -803,6 +850,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
     acp_agent_command = "claude"
     extra_headers: dict[str, str] = {}
     min_year = 2020
+    hybrid_search = True
 
     try:
         config = RCConfig.load(path, check_paths=False)
@@ -815,6 +863,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
         experiment_mode = config.experiment.mode
         acp_agent_command = config.llm.acp.agent
         min_year = config.research.min_year
+        hybrid_search = config.research.hybrid_search
         # Gateway routing headers. Some gateways need a per-conversation
         # session id and reject a placeholder, so resolve "auto" exactly the
         # way LLMClient does.
@@ -836,6 +885,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
             )
         )
     checks.append(check_min_year(min_year))
+    checks.append(check_literature_cache(min_year, hybrid_search))
     checks.append(check_sandbox_python(sandbox_python_path))
     checks.append(check_matplotlib())
     checks.append(check_experiment_mode(experiment_mode))
